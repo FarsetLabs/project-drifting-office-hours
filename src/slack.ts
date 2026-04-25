@@ -145,6 +145,10 @@ export function buildBookingModal(rooms: Room[], greeting?: string): object {
         action_id: "description",
         multiline: true,
         max_length: 2000,
+        placeholder: {
+          type: "plain_text",
+          text: "Here's what's on, and how to sign up to the event: https://example.com",
+        },
       },
     },
     {
