@@ -1,0 +1,11 @@
+name = "create-an-event-through-slack"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Secrets are set via `wrangler secret put` or GitHub Actions, not here:
+#   SLACK_SIGNING_SECRET          — from Slack app's Basic Information page
+#   SLACK_BOT_TOKEN               — xoxb-... from OAuth & Permissions
+#   GOOGLE_SERVICE_ACCOUNT_JSON   — full JSON key for the service account
+#   GOOGLE_CALENDAR_ID            — Farset Labs Events calendar ID
+#   GOOGLE_IMPERSONATE_SUBJECT    — Workspace user the SA impersonates via DWD (e.g. services@farsetlabs.org.uk)
+#   ROOMS_JSON                    — JSON array of { name, email, capacity } room records

@@ -1,0 +1,10 @@
+.gitconfig
+node_modules/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+
+# Never commit the service account key
+*service-account*.json
+google-key*.json

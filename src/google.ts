@@ -1,0 +1,168 @@
+import type { ServiceAccountKey } from "./types";
+
+const SCOPE = "https://www.googleapis.com/auth/calendar";
+
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+export async function getAccessToken(
+  keyJson: string,
+  subject?: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const cacheKey = subject ?? "_self";
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > now + 60) {
+    return cached.token;
+  }
+
+  const key: ServiceAccountKey = JSON.parse(keyJson);
+  const header = { alg: "RS256", typ: "JWT" };
+  const claim: Record<string, unknown> = {
+    iss: key.client_email,
+    scope: SCOPE,
+    aud: key.token_uri,
+    iat: now,
+    exp: now + 3600,
+  };
+  if (subject) claim.sub = subject;
+
+  const enc = (obj: unknown) =>
+    base64url(new TextEncoder().encode(JSON.stringify(obj)));
+  const unsigned = `${enc(header)}.${enc(claim)}`;
+
+  const pkcs8 = pemToArrayBuffer(key.private_key);
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8",
+    pkcs8,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sigBuf = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    cryptoKey,
+    new TextEncoder().encode(unsigned),
+  );
+  const jwt = `${unsigned}.${base64url(new Uint8Array(sigBuf))}`;
+
+  const res = await fetch(key.token_uri, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: jwt,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Token exchange failed: ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { access_token: string; expires_in: number };
+  tokenCache.set(cacheKey, {
+    token: data.access_token,
+    expiresAt: now + data.expires_in,
+  });
+  return data.access_token;
+}
+
+export interface BusyRange {
+  start: string;
+  end: string;
+}
+
+export async function getBusyRanges(
+  token: string,
+  calendarId: string,
+  startISO: string,
+  endISO: string,
+): Promise<BusyRange[]> {
+  const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      timeMin: startISO,
+      timeMax: endISO,
+      items: [{ id: calendarId }],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`freeBusy failed: ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as {
+    calendars: Record<string, { busy: BusyRange[]; errors?: Array<{ reason: string }> }>;
+  };
+  const cal = data.calendars[calendarId];
+  if (cal?.errors?.length) {
+    throw new Error(`freeBusy calendar error: ${cal.errors.map((e) => e.reason).join(", ")}`);
+  }
+  return cal?.busy ?? [];
+}
+
+export interface CreatedEvent {
+  htmlLink: string;
+  id: string;
+  attendees?: Array<{ email: string; resource?: boolean; responseStatus?: string }>;
+}
+
+export async function createEvent(
+  token: string,
+  calendarId: string,
+  event: {
+    summary: string;
+    description: string;
+    location: string;
+    startISO: string;
+    endISO: string;
+    visibility: "public" | "private";
+    roomEmail?: string;
+  },
+): Promise<CreatedEvent> {
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+  );
+  if (event.roomEmail) url.searchParams.set("sendUpdates", "all");
+
+  const body: Record<string, unknown> = {
+    summary: event.summary,
+    description: event.description,
+    location: event.location,
+    visibility: event.visibility === "private" ? "private" : "public",
+    start: { dateTime: event.startISO, timeZone: "Europe/London" },
+    end: { dateTime: event.endISO, timeZone: "Europe/London" },
+  };
+  if (event.roomEmail) {
+    body.attendees = [{ email: event.roomEmail, resource: true }];
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`Create event failed: ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as CreatedEvent;
+}
+
+function base64url(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const body = pem
+    .replace(/-----BEGIN [^-]+-----/, "")
+    .replace(/-----END [^-]+-----/, "")
+    .replace(/\s+/g, "");
+  const bin = atob(body);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
