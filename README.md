@@ -1,70 +1,209 @@
 # create-an-event-through-slack
 
-Cloudflare Worker that powers the **Create an Event** Slack app. A `/create-an-event` slash command opens a modal; submitting it creates an event on the Farset Labs Events Google Calendar.
+> Farset Labs is a hackerspace — about tinkering with technology. **This is a project. Tinker with it.**
+>
+> Read it. Break it (in a branch). Fix something that bugs you. Add a feature you want. Open a PR. The lab is collectively maintained, and so is this.
 
-## Architecture
+A small Cloudflare Worker that powers the **Create an Event** Slack app. Members run `/create-an-event` in Slack, fill in a form, and a real Google Calendar event lands on the Farset Labs Events calendar with the right rooms blocked.
+
+---
+
+## Usage — using it as a member
+
+In any channel in the Farset Labs Slack, type:
 
 ```
-Slack workspace
-  ├─ /create-an-event  ──►  POST /slack/commands       ──►  views.open (modal)
-  └─ Modal submit      ──►  POST /slack/interactions   ──►  Google Calendar API
-                                                              │
-                                                              └──DM──►  Slack
+/create-an-event
 ```
 
-## Endpoints
+A form pops up. Fill in **Title**, optional **Description**, **Start**, **End**, and tick **one or more rooms**. Hit **Book**. You'll get a DM within a few seconds with a link to the calendar event.
 
-- `GET /health` — liveness check.
-- `POST /slack/commands` — receives the `/create-an-event` slash command, opens the booking modal.
-- `POST /slack/interactions` — receives modal submissions and global shortcuts.
+### "Members only" — what's that about?
 
-## Setup
+The bot only accepts bookings from people with an active Stripe membership. When you run `/create-an-event`, it:
 
-### 1. Install dependencies
+1. Reads your Slack profile email.
+2. Asks Stripe whether that email has an active membership subscription.
+3. If yes → opens the form (with a wee greeting telling you how long you've been a member).
+4. If no → tells you politely, with two ways to resolve.
+
+The two resolutions, in order of preference:
+
+- **You're not yet a member?** [Join Farset Labs](https://www.farsetlabs.org.uk/).
+- **Your Stripe email differs from your Slack email?** Either update Stripe's email via the customer portal (link is in the bot's reply), or update your Slack profile email to match what's on Stripe.
+
+In a pinch a fellow member can book on your behalf, but please try the above first — bot accountability gets fuzzy when bookings don't match the actual person using the room.
+
+### Something looks broken?
+
+DM whoever's been on the project lately, post in `#tech` (or whatever the current channel is), or just open a GitHub issue. Saying "this didn't work and here's the screenshot" is a perfectly valid contribution.
+
+---
+
+## Maintenance — tinkering with the project
+
+This is a normal repo. Clone it, edit it, deploy it. There's nothing magical going on.
+
+### What's involved (every piece, plain English)
+
+The whole thing is one Cloudflare Worker (~600 lines of TypeScript) plus four external services. Each piece does one thing:
+
+- **Slack app** — the user-facing chat UI. Owns the slash command and the modal. Configured at [api.slack.com/apps](https://api.slack.com/apps). Sends webhooks to the Worker when someone runs the command or submits the form.
+- **Cloudflare Worker** — the brains. Receives Slack webhooks, talks to Stripe and Google, replies to Slack. Runs on Cloudflare's free tier. Configured at [dash.cloudflare.com](https://dash.cloudflare.com).
+- **Google Workspace + Calendar** — where the actual events get created. Rooms are configured as Workspace **resources** (admin.google.com → Buildings and resources). The Worker uses a **service account** with **Domain-Wide Delegation** to act as a Workspace user (`services@farsetlabs.org.uk`) — that's what gives it permission to attach rooms to events.
+- **Stripe** — source of truth for "is this person a member?". The Worker uses a read-only restricted API key.
+- **GitHub** — where this code lives. Pushing to `main` auto-deploys via GitHub Actions. PRs welcome.
+
+### How to get access to the pieces
+
+| Piece | How to get access |
+|---|---|
+| **GitHub repo** | It's on Farset Labs' org. Ask a director if you need write access. Reading and forking are public. |
+| **Cloudflare** | Ask a director — they'll add you to the Farset Labs Cloudflare account as a collaborator. |
+| **Slack app config** | Ask a Workspace admin to add you as a "collaborator" on the app at api.slack.com/apps. |
+| **Google Workspace admin** | Ask a director. Most maintenance doesn't need it. |
+| **Stripe dashboard** | Ask a director. Most maintenance doesn't need it (the Worker uses a restricted API key, not a personal Stripe login). |
+
+If you're not sure who a director is, see the Farset Labs website or ask in Slack.
+
+### Where every config value comes from
+
+The Worker is configured by **secrets** — encrypted environment variables stored in Cloudflare. Set them with `npx wrangler secret put NAME` (or pipe a file in: `npx wrangler secret put NAME < file.txt`).
+
+> 🤖 **Don't know what something means? Ask Claude / ChatGPT / any LLM.** Paste the secret name, paste the description, and ask "where do I find this in the [Stripe / Google / Slack] dashboard". They're great at walking through these UIs.
+
+#### Safe to set yourself
+
+These are non-sensitive or you can find them yourself.
+
+| Secret | What it is | Where to get it |
+|---|---|---|
+| `MEMBERSHIP_SIGNUP_URL` | Where non-members are pointed to join. | Wherever the lab's signup page lives — usually farsetlabs.org.uk. |
+| `STRIPE_BILLING_PORTAL_URL` | Self-service link for members to update their billing email. | dashboard.stripe.com → Settings → Billing → Customer portal → copy the "Login link". Not secret. |
+| `ROOMS_JSON` | JSON array of `{ name, email, capacity }` for each bookable room. | admin.google.com → Buildings and resources → click each room → copy the **Resource email** field. Capacity is the number you set when creating the room. |
+| `GOOGLE_CALENDAR_ID` | The Farset Labs Events calendar's ID. | calendar.google.com → "Farset Labs Events" → Settings and sharing → "Calendar ID" field. |
+| `GOOGLE_IMPERSONATE_SUBJECT` | Workspace user the bot acts as (currently `services@farsetlabs.org.uk`). | Just an email address. The user has to actually exist in Workspace and have access to the calendars. |
+
+#### Ask a director for these
+
+These are sensitive — leaking them could let someone impersonate the bot, read membership data, or mess with the Google account.
+
+| Secret | What it is | How to get it (with director help) |
+|---|---|---|
+| `SLACK_SIGNING_SECRET` | Slack uses this to prove webhooks really came from Slack. | api.slack.com/apps → Create an Event → Basic Information → App Credentials → Signing Secret. **A director can give you read access to the app.** |
+| `SLACK_BOT_TOKEN` | The Slack bot's identity (`xoxb-...`). Lets the Worker post messages as the bot. | api.slack.com/apps → Create an Event → OAuth & Permissions → Bot User OAuth Token. **Same access as above.** |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | The full JSON private key for the service account that books events. **Treat like a password.** | console.cloud.google.com → IAM & Admin → Service Accounts → click the bot account → Keys → Create new key (JSON). Pipe the file into `wrangler secret put` — don't paste it. **Ask a director with GCP access.** |
+| `STRIPE_SECRET_KEY` | Read-only Stripe API key for the membership check. | dashboard.stripe.com → Developers → API keys → Restricted keys → Create. Permissions: Customers Read, Subscriptions Read, **nothing else**. **Ask a director with Stripe access.** |
+| `STRIPE_MEMBERSHIP_PRICE_IDS` | Comma-separated list of Stripe Price IDs that count as a membership. | dashboard.stripe.com → Product catalog → click each membership product → copy each Price ID. **Director can pull these in two minutes.** |
+
+If you're rotating one of the sensitive secrets (because someone left, or it leaked), you also need to invalidate the old one — revoke the Stripe key, regenerate the service-account key, etc. **Ask a director to help; this is the kind of thing where small mistakes have big consequences.**
+
+### How to actually deploy a change
 
 ```bash
+git clone https://github.com/farsetlabs/create-an-event-through-slack.git
+cd create-an-event-through-slack
 npm install
 ```
 
-### 2. Set Worker secrets
+Make your change. Type-check it:
 
 ```bash
-npx wrangler secret put SLACK_SIGNING_SECRET   # Basic Information → App Credentials → Signing Secret
-npx wrangler secret put SLACK_BOT_TOKEN        # OAuth & Permissions → Bot User OAuth Token (xoxb-...)
-npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON   # paste full service account JSON file contents
-npx wrangler secret put GOOGLE_CALENDAR_ID     # farsetlabs.org.uk_srmqnkn373auq51u00s2nijrq8@group.calendar.google.com
+npx tsc --noEmit
 ```
 
-### 3. Deploy
+Push to a branch, open a PR. When it merges to `main`, GitHub Actions auto-deploys (see `.github/workflows/deploy.yml`).
+
+If you want to deploy a quick fix without going through CI (e.g. you're a maintainer with Cloudflare access and the prod bot is broken):
 
 ```bash
+npx wrangler login
 npx wrangler deploy
 ```
 
-The Worker will be live at `https://create-an-event-through-slack.<your-subdomain>.workers.dev`.
-
-### 4. Update the Slack app's URLs
-
-At **api.slack.com/apps → Create an Event**:
-
-- **Slash Commands** → `/create-an-event` → request URL: `https://create-an-event-through-slack.<your-subdomain>.workers.dev/slack/commands`
-- **Interactivity & Shortcuts** → request URL: `https://create-an-event-through-slack.<your-subdomain>.workers.dev/slack/interactions`
-
-Save both. No reinstall needed unless OAuth scopes change.
-
-### 5. GitHub Actions (optional, for auto-deploy on push to main)
-
-Add these repo secrets in **Settings → Secrets and variables → Actions**:
-
-- `CLOUDFLARE_API_TOKEN` — Workers Edit token
-- `CLOUDFLARE_ACCOUNT_ID` — your Cloudflare account ID
-
-The workflow in `.github/workflows/deploy.yml` runs on every push to `main`.
-
-## Local dev
+### Local development
 
 ```bash
 npx wrangler dev
 ```
 
-Use a `.dev.vars` file (gitignored) to set local secrets. Note: Slack can't reach `localhost`, so for end-to-end testing you'll want `wrangler dev --remote` or just deploy to a preview environment.
+Set local secrets in a `.dev.vars` file (gitignored). Slack can't reach your `localhost`, so for end-to-end testing either:
+- Use `npx wrangler dev --remote` (Cloudflare gives you a temporary public URL) and point the Slack app at it temporarily.
+- Or just push to a branch and use the deployed preview URL.
+
+### Architecture diagram
+
+```
+Slack workspace (Farset Labs)
+  ├─ /create-an-event ──► POST /slack/commands
+  │                          │
+  │                          ├─ verify Slack signature
+  │                          ├─ ask Stripe: "is this email a member?"
+  │                          │     ├─ no  → ephemeral "members only" reply
+  │                          │     └─ yes → open booking modal
+  │                          └─ done
+  │
+  └─ Modal submit ──► POST /slack/interactions
+                              │
+                              ├─ freeBusy across selected rooms
+                              ├─ create one event on the Events calendar
+                              │   with rooms attached as resource attendees
+                              └─ DM booker with calendar link
+```
+
+### Code map
+
+```
+src/
+├── index.ts     # Worker entrypoint — routes /health, /slack/commands, /slack/interactions, glue logic
+├── google.ts    # Service-account JWT + DWD, freebusy queries, event creation
+├── slack.ts     # Signature verification, modal builders, users.info, postDM
+├── stripe.ts    # Membership lookup (customers.search → subscriptions list)
+└── types.ts     # Env, Room, SlackBlockValue, etc.
+```
+
+### Adding a new room
+
+1. Create the room in **admin.google.com → Buildings and resources**.
+2. Subscribe to it in **calendar.google.com** (Other calendars → + → Browse resources).
+3. Share its calendar with the impersonated Workspace user (currently `services@farsetlabs.org.uk`), permission **Make changes to events**.
+4. Append a new entry to your local `rooms.json`:
+   ```json
+   { "name": "New Room", "email": "farsetlabs.org.uk_…@resource.calendar.google.com", "capacity": 12 }
+   ```
+5. Push the new file to Cloudflare:
+   ```bash
+   npx wrangler secret put ROOMS_JSON < rooms.json
+   npx wrangler deploy
+   ```
+
+No code change needed — the modal reads from `ROOMS_JSON` on every open.
+
+### Things to tinker with
+
+A non-exhaustive list of "would be nice if someone built this" — pick whatever scratches your itch:
+
+- **`/my-bookings`** — list your future bookings.
+- **`/cancel-event`** — cancel one of your bookings.
+- **Auto-post bookings to `#events`** — currently only the booker gets a DM.
+- **Recurring bookings** — Wednesday Hack Night, weekly knit-and-natter, etc.
+- **Better duration parsing** — let people type "tomorrow 7-9pm" instead of using two pickers.
+- **Per-room booking rules** — e.g. Meeting Room max 2h per day per person.
+- **Past-time guard** — currently you can technically book yesterday.
+- **Tier-aware UI** — show different rooms / time slots depending on membership tier.
+- **Tests** — there are none. Bun has a test runner, vitest works too. PRs welcome.
+
+---
+
+## Endpoints
+
+- `GET /health` — liveness check, returns `200 ok`.
+- `POST /slack/commands` — receives the slash command.
+- `POST /slack/interactions` — receives modal submissions and global shortcut clicks.
+
+## Operational notes
+
+- **Conflict detection** runs `freeBusy.query` on every selected room before booking. If any room is busy, the modal stays open with a per-room error.
+- **Room auto-accept** is handled by Workspace's native resource booking. If a room declines (e.g. its policy refuses the user), the booker gets a warning in their DM.
+- **Token caching** — Google service-account JWTs are cached in-memory per Worker isolate.
+- **No caching on Stripe** — each `/create-an-event` invocation hits Stripe. Fine at hackerspace scale.

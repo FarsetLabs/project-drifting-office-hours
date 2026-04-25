@@ -9,3 +9,7 @@ compatibility_date = "2025-01-01"
 #   GOOGLE_CALENDAR_ID            — Farset Labs Events calendar ID
 #   GOOGLE_IMPERSONATE_SUBJECT    — Workspace user the SA impersonates via DWD (e.g. services@farsetlabs.org.uk)
 #   ROOMS_JSON                    — JSON array of { name, email, capacity } room records
+#   STRIPE_SECRET_KEY             — restricted Stripe key (rk_live_... or rk_test_...) with read on Customers + Subscriptions
+#   STRIPE_MEMBERSHIP_PRICE_IDS   — comma-separated Stripe Price IDs that count as membership
+#   MEMBERSHIP_SIGNUP_URL         — link non-members are pointed to (e.g. https://www.farsetlabs.org.uk/)
+#   STRIPE_BILLING_PORTAL_URL     — Stripe customer portal login link for self-service email/payment updates

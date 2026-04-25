@@ -5,24 +5,16 @@ export interface Env {
   GOOGLE_CALENDAR_ID: string;
   GOOGLE_IMPERSONATE_SUBJECT: string;
   ROOMS_JSON: string;
+  STRIPE_SECRET_KEY: string;
+  STRIPE_MEMBERSHIP_PRICE_IDS: string;
+  MEMBERSHIP_SIGNUP_URL: string;
+  STRIPE_BILLING_PORTAL_URL: string;
 }
 
 export interface Room {
   name: string;
   email: string;
   capacity: number;
-}
-
-export interface Booking {
-  title: string;
-  date: string;        // YYYY-MM-DD
-  startTime: string;   // HH:MM
-  endTime: string;     // HH:MM
-  room: string;
-  visibility: "public" | "private";
-  description: string;
-  bookerSlackId: string;
-  bookerName: string;
 }
 
 export interface ServiceAccountKey {
@@ -42,8 +34,7 @@ export interface SlackViewSubmission {
 
 export interface SlackBlockValue {
   type: string;
-  value?: string;
-  selected_option?: { value: string };
-  selected_date?: string;
-  selected_time?: string;
+  value?: string | null;
+  selected_options?: Array<{ value: string }>;
+  selected_date_time?: number | null;
 }

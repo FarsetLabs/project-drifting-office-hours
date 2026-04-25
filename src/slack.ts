@@ -2,6 +2,16 @@ import type { Room } from "./types";
 
 const FIVE_MINUTES = 5 * 60;
 
+export const TINKER_LINK =
+  ":wrench: Want to change how this works? <https://github.com/FarsetLabs/project-drifting-office-hours|Edit on GitHub>.";
+
+function tinkerContextBlock(): object {
+  return {
+    type: "context",
+    elements: [{ type: "mrkdwn", text: TINKER_LINK }],
+  };
+}
+
 export async function verifySlackSignature(
   body: string,
   timestamp: string,
@@ -68,88 +78,108 @@ export async function postDM(
   }
 }
 
-export function buildBookingModal(rooms: Room[]): object {
+export async function getUserEmail(
+  botToken: string,
+  userId: string,
+): Promise<string | null> {
+  const res = await fetch(
+    `https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`,
+    { headers: { Authorization: `Bearer ${botToken}` } },
+  );
+  const data = (await res.json()) as {
+    ok: boolean;
+    error?: string;
+    user?: { profile?: { email?: string } };
+  };
+  if (!data.ok) {
+    console.error("users.info failed:", data.error);
+    return null;
+  }
+  return data.user?.profile?.email ?? null;
+}
+
+export function buildErrorModal(message: string): object {
+  return {
+    type: "modal",
+    title: { type: "plain_text", text: "Members only" },
+    close: { type: "plain_text", text: "Close" },
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: message } },
+      { type: "divider" },
+      tinkerContextBlock(),
+    ],
+  };
+}
+
+export function buildBookingModal(rooms: Room[], greeting?: string): object {
   const roomOptions = rooms.map((r) => ({
     text: { type: "plain_text", text: `${r.name} (${r.capacity} seats)` },
     value: r.email,
   }));
+  const blocks: object[] = [];
+  if (greeting) {
+    blocks.push(
+      { type: "section", text: { type: "mrkdwn", text: greeting } },
+      { type: "divider" },
+    );
+  }
+  blocks.push(
+    {
+      type: "input",
+      block_id: "title_block",
+      label: { type: "plain_text", text: "Title" },
+      element: {
+        type: "plain_text_input",
+        action_id: "title",
+        placeholder: { type: "plain_text", text: "e.g. Soldering night" },
+        max_length: 100,
+      },
+    },
+    {
+      type: "input",
+      block_id: "description_block",
+      optional: true,
+      label: { type: "plain_text", text: "Description" },
+      element: {
+        type: "plain_text_input",
+        action_id: "description",
+        multiline: true,
+        max_length: 2000,
+      },
+    },
+    {
+      type: "input",
+      block_id: "start_block",
+      label: { type: "plain_text", text: "Start" },
+      element: { type: "datetimepicker", action_id: "start" },
+    },
+    {
+      type: "input",
+      block_id: "end_block",
+      label: { type: "plain_text", text: "End" },
+      element: { type: "datetimepicker", action_id: "end" },
+    },
+    {
+      type: "input",
+      block_id: "rooms_block",
+      label: { type: "plain_text", text: "Rooms" },
+      element: {
+        type: "multi_static_select",
+        action_id: "rooms",
+        placeholder: { type: "plain_text", text: "Pick one or more rooms" },
+        options: roomOptions,
+      },
+    },
+    { type: "divider" },
+    tinkerContextBlock(),
+  );
   return {
     type: "modal",
     callback_id: "submit_booking",
     title: { type: "plain_text", text: "Create an Event" },
     submit: { type: "plain_text", text: "Book" },
     close: { type: "plain_text", text: "Cancel" },
-    blocks: [
-      {
-        type: "input",
-        block_id: "title_block",
-        label: { type: "plain_text", text: "Event title" },
-        element: {
-          type: "plain_text_input",
-          action_id: "title",
-          placeholder: { type: "plain_text", text: "e.g. Soldering night" },
-          max_length: 100,
-        },
-      },
-      {
-        type: "input",
-        block_id: "date_block",
-        label: { type: "plain_text", text: "Date" },
-        element: { type: "datepicker", action_id: "date" },
-      },
-      {
-        type: "input",
-        block_id: "start_block",
-        label: { type: "plain_text", text: "Start time" },
-        element: { type: "timepicker", action_id: "start_time" },
-      },
-      {
-        type: "input",
-        block_id: "end_block",
-        label: { type: "plain_text", text: "End time" },
-        element: { type: "timepicker", action_id: "end_time" },
-      },
-      {
-        type: "input",
-        block_id: "room_block",
-        label: { type: "plain_text", text: "Room" },
-        element: {
-          type: "static_select",
-          action_id: "room",
-          placeholder: { type: "plain_text", text: "Pick a room" },
-          options: roomOptions,
-        },
-      },
-      {
-        type: "input",
-        block_id: "visibility_block",
-        label: { type: "plain_text", text: "Visibility" },
-        element: {
-          type: "radio_buttons",
-          action_id: "visibility",
-          initial_option: {
-            text: { type: "plain_text", text: "Public" },
-            value: "public",
-          },
-          options: [
-            { text: { type: "plain_text", text: "Public" }, value: "public" },
-            { text: { type: "plain_text", text: "Private" }, value: "private" },
-          ],
-        },
-      },
-      {
-        type: "input",
-        block_id: "description_block",
-        optional: true,
-        label: { type: "plain_text", text: "Description" },
-        element: {
-          type: "plain_text_input",
-          action_id: "description",
-          multiline: true,
-          max_length: 1000,
-        },
-      },
-    ],
+    blocks,
   };
 }
 

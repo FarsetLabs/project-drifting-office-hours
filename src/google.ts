@@ -69,12 +69,12 @@ export interface BusyRange {
   end: string;
 }
 
-export async function getBusyRanges(
+export async function getBusyForCalendars(
   token: string,
-  calendarId: string,
+  calendarIds: string[],
   startISO: string,
   endISO: string,
-): Promise<BusyRange[]> {
+): Promise<Record<string, BusyRange[]>> {
   const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
     method: "POST",
     headers: {
@@ -84,7 +84,7 @@ export async function getBusyRanges(
     body: JSON.stringify({
       timeMin: startISO,
       timeMax: endISO,
-      items: [{ id: calendarId }],
+      items: calendarIds.map((id) => ({ id })),
     }),
   });
   if (!res.ok) {
@@ -93,11 +93,17 @@ export async function getBusyRanges(
   const data = (await res.json()) as {
     calendars: Record<string, { busy: BusyRange[]; errors?: Array<{ reason: string }> }>;
   };
-  const cal = data.calendars[calendarId];
-  if (cal?.errors?.length) {
-    throw new Error(`freeBusy calendar error: ${cal.errors.map((e) => e.reason).join(", ")}`);
+  const out: Record<string, BusyRange[]> = {};
+  for (const id of calendarIds) {
+    const cal = data.calendars[id];
+    if (cal?.errors?.length) {
+      throw new Error(
+        `freeBusy error on ${id}: ${cal.errors.map((e) => e.reason).join(", ")}`,
+      );
+    }
+    out[id] = cal?.busy ?? [];
   }
-  return cal?.busy ?? [];
+  return out;
 }
 
 export interface CreatedEvent {
@@ -115,25 +121,23 @@ export async function createEvent(
     location: string;
     startISO: string;
     endISO: string;
-    visibility: "public" | "private";
-    roomEmail?: string;
+    roomEmails?: string[];
   },
 ): Promise<CreatedEvent> {
   const url = new URL(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
   );
-  if (event.roomEmail) url.searchParams.set("sendUpdates", "all");
+  if (event.roomEmails?.length) url.searchParams.set("sendUpdates", "all");
 
   const body: Record<string, unknown> = {
     summary: event.summary,
     description: event.description,
     location: event.location,
-    visibility: event.visibility === "private" ? "private" : "public",
     start: { dateTime: event.startISO, timeZone: "Europe/London" },
     end: { dateTime: event.endISO, timeZone: "Europe/London" },
   };
-  if (event.roomEmail) {
-    body.attendees = [{ email: event.roomEmail, resource: true }];
+  if (event.roomEmails?.length) {
+    body.attendees = event.roomEmails.map((email) => ({ email, resource: true }));
   }
 
   const res = await fetch(url, {
