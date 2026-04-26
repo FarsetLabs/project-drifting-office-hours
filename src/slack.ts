@@ -5,6 +5,18 @@ const FIVE_MINUTES = 5 * 60;
 export const TINKER_LINK =
   ":wrench: Want to change how this works? <https://github.com/FarsetLabs/project-drifting-office-hours|Edit on GitHub>.";
 
+/**
+ * Escape user-supplied text before embedding it in a Slack mrkdwn block.
+ * Prevents `<!channel>`, `<@U123>`, and other control sequences from being
+ * rendered, plus protects against HTML-entity confusion.
+ */
+export function escapeMrkdwn(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function tinkerContextBlock(suffix?: string): object {
   const text = suffix ? `${TINKER_LINK}\n${suffix}` : TINKER_LINK;
   return {
@@ -97,6 +109,20 @@ export async function postChannelMessage(
   if (!data.ok) {
     console.error("chat.postMessage (channel) failed:", data.error);
     throw new Error(`channel post failed: ${data.error}`);
+  }
+}
+
+export async function postToResponseUrl(
+  responseUrl: string,
+  payload: object,
+): Promise<void> {
+  const res = await fetch(responseUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    console.error("response_url POST failed:", res.status, await res.text());
   }
 }
 

@@ -2,14 +2,24 @@ import { createEvent, getAccessToken, getEventsForRooms } from "./google";
 import {
   buildBookingModal,
   buildErrorModal,
+  escapeMrkdwn,
   getUserEmail,
   openModal,
   postChannelMessage,
   postDM,
+  postToResponseUrl,
   TINKER_LINK,
   verifySlackSignature,
 } from "./slack";
-import { findActiveMembership } from "./stripe";
+import {
+  findActiveMembership,
+  getLabStats,
+  getLifetimeContributionPence,
+  getProductNames,
+} from "./stripe";
+
+const FARSET_LABS_OPENED_AT = "2012-04-06";
+const TIER_ORDER = ["Standard", "Professional", "Professional + Desk", "Casual"];
 import type { Env, Room, SlackViewSubmission } from "./types";
 
 export default {
@@ -42,8 +52,27 @@ async function handleSlashCommand(
   if (!verified) return new Response("Unauthorized", { status: 401 });
 
   const params = new URLSearchParams(body);
-  const triggerId = params.get("trigger_id");
+  const command = params.get("command");
   const userId = params.get("user_id");
+  const responseUrl = params.get("response_url");
+
+  if (command === "/stats") {
+    if (!userId || !responseUrl) {
+      return new Response("Missing user_id or response_url", { status: 400 });
+    }
+    if (!responseUrl.startsWith("https://hooks.slack.com/")) {
+      return new Response("Invalid response_url", { status: 400 });
+    }
+    const userName = params.get("user_name") ?? "you";
+    ctx.waitUntil(
+      computeAndSendStats(env, userId, userName, responseUrl).catch((err) =>
+        console.error("Stats handler failed:", err),
+      ),
+    );
+    return new Response("", { status: 200 });
+  }
+
+  const triggerId = params.get("trigger_id");
   if (!triggerId || !userId) {
     return new Response("Missing trigger_id or user_id", { status: 400 });
   }
@@ -270,12 +299,13 @@ async function announceToChannel(
 ): Promise<void> {
   if (!env.EVENTS_CHANNEL_ID) return;
   const range = formatBusyRange(args.startISO, args.endISO);
+  const safeTitle = escapeMrkdwn(args.title);
   const headerLines = [
-    `:date: *${args.title}*`,
-    `${range}  ·  ${args.roomNames}`,
+    `:date: *${safeTitle}*`,
+    `${range}  ·  ${escapeMrkdwn(args.roomNames)}`,
   ];
   if (args.userDescription) {
-    headerLines.push("", args.userDescription);
+    headerLines.push("", escapeMrkdwn(args.userDescription));
   }
   const blocks = [
     {
@@ -381,6 +411,196 @@ function formatBusyRange(startISO: string, endISO: string): string {
     return `${startDate}, ${startTime}–${endTime}`;
   }
   return `${startDate}, ${startTime} – ${endDate}, ${endTime}`;
+}
+
+async function computeAndSendStats(
+  env: Env,
+  slackUserId: string,
+  slackUserName: string,
+  responseUrl: string,
+): Promise<void> {
+  try {
+    const email = await getUserEmail(env.SLACK_BOT_TOKEN, slackUserId);
+    if (!email) {
+      await postToResponseUrl(responseUrl, {
+        response_type: "ephemeral",
+        text: ":lock: We couldn't read your Slack email. Make sure your Slack profile has an email set, or ask another member to help.",
+      });
+      return;
+    }
+
+    const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const productNames = await getProductNames(env.STRIPE_SECRET_KEY);
+    const membership = await findActiveMembership(
+      env.STRIPE_SECRET_KEY,
+      email.toLowerCase(),
+      priceIds,
+      productNames,
+    );
+
+    if (!membership.active || !membership.memberSince || !membership.tier) {
+      await postToResponseUrl(responseUrl, {
+        response_type: "ephemeral",
+        text: `No active Farset Labs membership found for ${email}.`,
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text:
+                `:bar_chart: No active Farset Labs membership found for *${email}*.\n\n` +
+                `• Not a member yet? <${env.MEMBERSHIP_SIGNUP_URL}|Join Farset Labs>.\n` +
+                `• Pay under a different email? <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>, or change your Slack profile email to match.`,
+            },
+          },
+          {
+            type: "context",
+            elements: [{ type: "mrkdwn", text: TINKER_LINK }],
+          },
+        ],
+      });
+      return;
+    }
+
+    const [labStats, contributionPence] = await Promise.all([
+      getLabStats(
+        env.STRIPE_SECRET_KEY,
+        priceIds,
+        membership.memberSince,
+        productNames,
+      ),
+      getLifetimeContributionPence(env.STRIPE_SECRET_KEY, membership.customerIds),
+    ]);
+
+    const rank = labStats.olderThanUser + 1;
+    const duration = humanizeDuration(membership.memberSince);
+    const joinDate = formatOrdinalDate(membership.memberSince);
+    const contribution = formatPounds(contributionPence);
+    const tierSplitText = orderedTierBreakdown(labStats.tierBreakdown)
+      .map(([name, count]) => `${name} ${count}`)
+      .join(" · ");
+    const openedDate = formatOrdinalDate(unixFromIsoDate(FARSET_LABS_OPENED_AT));
+    const birthdayMsg = nextBirthdayMessage(FARSET_LABS_OPENED_AT);
+
+    const blockquote = [
+      `> *:bar_chart: @${slackUserName}*`,
+      `> `,
+      `> • You're the ${ordinal(rank)} longest-active member, active since ${joinDate} (${duration})`,
+      `> • You've contributed ${contribution} to the hackerspace :green_heart:`,
+      `> `,
+      `> :credit_card: You're on ${membership.tier.productName} membership. <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>.`,
+      `> `,
+      `> *:farsetlabs: Farset Labs Hackerspace*`,
+      `> `,
+      `> • ${labStats.total} active members: ${tierSplitText}`,
+      `> • ${labStats.joinedLast30} joined and ${labStats.leftLast30} left in the last 30 days`,
+      `> • Open since ${openedDate} — next birthday is ${birthdayMsg}.`,
+      `> `,
+      `> ${TINKER_LINK}`,
+    ].join("\n");
+
+    await postToResponseUrl(responseUrl, {
+      response_type: "ephemeral",
+      text: `Your Farset Labs membership and lab stats.`,
+      blocks: [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: blockquote },
+        },
+      ],
+    });
+  } catch (err) {
+    console.error("Stats compute failed:", err);
+    await postToResponseUrl(responseUrl, {
+      response_type: "ephemeral",
+      text: ":warning: Couldn't fetch stats right now. Please try again in a moment.",
+    });
+  }
+}
+
+function ordinal(n: number): string {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+function formatOrdinalDate(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).formatToParts(d);
+  const day = parts.find((p) => p.type === "day")?.value ?? "";
+  const month = parts.find((p) => p.type === "month")?.value ?? "";
+  const year = parts.find((p) => p.type === "year")?.value ?? "";
+  return `${ordinal(parseInt(day, 10))} ${month} ${year}`;
+}
+
+function formatPounds(pence: number): string {
+  if (pence % 100 === 0) {
+    return `£${(pence / 100).toLocaleString("en-GB")}`;
+  }
+  return `£${(pence / 100).toLocaleString("en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function nextBirthdayMessage(isoDate: string): string {
+  const opened = parseIsoDate(isoDate);
+  const now = new Date();
+  const thisYear = now.getUTCFullYear();
+  let next = new Date(
+    Date.UTC(thisYear, opened.getUTCMonth(), opened.getUTCDate()),
+  );
+  if (next.getTime() <= now.getTime()) {
+    next = new Date(
+      Date.UTC(thisYear + 1, opened.getUTCMonth(), opened.getUTCDate()),
+    );
+  }
+  const days = Math.ceil((next.getTime() - now.getTime()) / 86_400_000);
+  if (days === 0) return "today!";
+  if (days === 1) return "tomorrow";
+  if (days < 14) return `in ${days} days`;
+  if (days < 60) {
+    const weeks = Math.round(days / 7);
+    return weeks === 1 ? "in a week" : `in ${weeks} weeks`;
+  }
+  const months = Math.round(days / 30);
+  return months === 1 ? "in a month" : `in ${months} months`;
+}
+
+function parseIsoDate(iso: string): Date {
+  return new Date(`${iso}T00:00:00Z`);
+}
+
+function unixFromIsoDate(iso: string): number {
+  return Math.floor(parseIsoDate(iso).getTime() / 1000);
+}
+
+function orderedTierBreakdown(
+  breakdown: Record<string, number>,
+): Array<[string, number]> {
+  const rank = (name: string) => {
+    const idx = TIER_ORDER.indexOf(name);
+    return idx === -1 ? TIER_ORDER.length : idx;
+  };
+  return Object.entries(breakdown)
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => rank(a) - rank(b));
 }
 
 function humanizeDuration(unixStartSeconds: number): string {

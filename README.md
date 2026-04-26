@@ -20,6 +20,10 @@ A form pops up. Fill in **Title**, optional **Description**, **Start**, **End**,
 
 If `EVENTS_CHANNEL_ID` is configured, the booking is also posted to a Slack channel (typically `#events`) with the title, time, rooms, your @-mention, and a link to the calendar event.
 
+### Other commands
+
+- **`/stats`** — see your own Farset Labs membership stats: when you joined, your tenure, your rank as the *Nth* longest-active member, and the total count of active members. Ephemeral reply (only you see it).
+
 ### "Members only" — what's that about?
 
 The bot only accepts bookings from people with an active Stripe membership. When you run `/create-an-event`, it:
