@@ -1,4 +1,4 @@
-import { createEvent, getAccessToken, getBusyForCalendars } from "./google";
+import { createEvent, getAccessToken, getEventsForRooms } from "./google";
 import {
   buildBookingModal,
   buildErrorModal,
@@ -160,21 +160,35 @@ async function handleBookingSubmission(
       env.GOOGLE_SERVICE_ACCOUNT_JSON,
       env.GOOGLE_IMPERSONATE_SUBJECT,
     );
-    const busyMap = await getBusyForCalendars(
+    const eventsByRoom = await getEventsForRooms(
       token,
       pickedRooms.map((r) => r.email),
       startISO,
       endISO,
     );
-    const conflicted = pickedRooms.find(
-      (r) => (busyMap[r.email] ?? []).length > 0,
-    );
-    if (conflicted) {
-      const range = busyMap[conflicted.email][0];
+    const conflicts = pickedRooms
+      .map((r) => ({ room: r, events: eventsByRoom[r.email] ?? [] }))
+      .filter((c) => c.events.length > 0);
+
+    if (conflicts.length > 0) {
+      const allLines = conflicts.flatMap((c) =>
+        c.events.map((e) => {
+          const isPrivate =
+            e.visibility === "private" || e.visibility === "confidential";
+          const title = isPrivate ? "A private booking" : e.summary || "An event";
+          return `• ${title} is happening in the ${c.room.name} — ${formatBusyRange(e.start, e.end)}`;
+        }),
+      );
+      const MAX_LINES = 10;
+      const shown = allLines.slice(0, MAX_LINES);
+      const remaining = allLines.length - shown.length;
+      const overflow = remaining > 0 ? `\n…and ${remaining} more` : "";
       return jsonResponse({
         response_action: "errors",
         errors: {
-          rooms_block: `${conflicted.name} is already booked from ${range.start} to ${range.end}.`,
+          rooms_block:
+            `Conflicts (Belfast time):\n${shown.join("\n")}${overflow}\n\n` +
+            `See what's free at https://www.farsetlabs.org.uk/whats-on/`,
         },
       });
     }
@@ -291,6 +305,31 @@ async function checkMembership(
         ":warning: Couldn't verify your membership right now. Please try again in a moment.",
     };
   }
+}
+
+function formatBusyRange(startISO: string, endISO: string): string {
+  const s = new Date(startISO);
+  const e = new Date(endISO);
+  const dateFmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+  const timeFmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const startDate = dateFmt.format(s);
+  const endDate = dateFmt.format(e);
+  const startTime = timeFmt.format(s);
+  const endTime = timeFmt.format(e);
+  if (startDate === endDate) {
+    return `${startDate}, ${startTime}–${endTime}`;
+  }
+  return `${startDate}, ${startTime} – ${endDate}, ${endTime}`;
 }
 
 function humanizeDuration(unixStartSeconds: number): string {

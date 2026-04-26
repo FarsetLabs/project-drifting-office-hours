@@ -64,46 +64,55 @@ export async function getAccessToken(
   return data.access_token;
 }
 
-export interface BusyRange {
+export interface RoomEvent {
+  summary: string;
+  visibility?: string;
   start: string;
   end: string;
 }
 
-export async function getBusyForCalendars(
+export async function getEventsForRooms(
   token: string,
   calendarIds: string[],
   startISO: string,
   endISO: string,
-): Promise<Record<string, BusyRange[]>> {
-  const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      timeMin: startISO,
-      timeMax: endISO,
-      items: calendarIds.map((id) => ({ id })),
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`freeBusy failed: ${res.status} ${await res.text()}`);
-  }
-  const data = (await res.json()) as {
-    calendars: Record<string, { busy: BusyRange[]; errors?: Array<{ reason: string }> }>;
-  };
-  const out: Record<string, BusyRange[]> = {};
-  for (const id of calendarIds) {
-    const cal = data.calendars[id];
-    if (cal?.errors?.length) {
-      throw new Error(
-        `freeBusy error on ${id}: ${cal.errors.map((e) => e.reason).join(", ")}`,
+): Promise<Record<string, RoomEvent[]>> {
+  const entries = await Promise.all(
+    calendarIds.map(async (id): Promise<[string, RoomEvent[]]> => {
+      const url = new URL(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(id)}/events`,
       );
-    }
-    out[id] = cal?.busy ?? [];
-  }
-  return out;
+      url.searchParams.set("timeMin", startISO);
+      url.searchParams.set("timeMax", endISO);
+      url.searchParams.set("singleEvents", "true");
+      url.searchParams.set("orderBy", "startTime");
+
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        throw new Error(
+          `events.list (${id}) failed: ${res.status} ${await res.text()}`,
+        );
+      }
+      const data = (await res.json()) as {
+        items: Array<{
+          summary?: string;
+          visibility?: string;
+          start: { dateTime?: string; date?: string };
+          end: { dateTime?: string; date?: string };
+        }>;
+      };
+      const events: RoomEvent[] = data.items.map((e) => ({
+        summary: e.summary ?? "",
+        visibility: e.visibility,
+        start: e.start.dateTime ?? e.start.date ?? "",
+        end: e.end.dateTime ?? e.end.date ?? "",
+      }));
+      return [id, events];
+    }),
+  );
+  return Object.fromEntries(entries);
 }
 
 export interface CreatedEvent {
