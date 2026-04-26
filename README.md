@@ -22,7 +22,7 @@ If `EVENTS_CHANNEL_ID` is configured, the booking is also posted to a Slack chan
 
 ### Other commands
 
-- **`/stats`** — see your own Farset Labs membership stats: when you joined, your tenure, your rank as the *Nth* longest-active member, and the total count of active members. Ephemeral reply (only you see it).
+- **`/stats`** — see your own membership info plus a lab-wide snapshot. Shows when you joined, your tenure and rank (*Nth* longest-active member), your tier, your lifetime contribution, plus active member count, tier split, joiners/leavers in the last 30 days, and the lab's opening anniversary. Ephemeral reply (only you see it).
 
 ### "Members only" — what's that about?
 
@@ -52,7 +52,7 @@ This is a normal repo. Clone it, edit it, deploy it. There's nothing magical goi
 
 ### What's involved (every piece, plain English)
 
-The whole thing is one Cloudflare Worker (~600 lines of TypeScript) plus four external services. Each piece does one thing:
+The whole thing is one Cloudflare Worker plus four external services. Each piece does one thing:
 
 - **Slack app** — the user-facing chat UI. Owns the slash command and the modal. Configured at [api.slack.com/apps](https://api.slack.com/apps). Sends webhooks to the Worker when someone runs the command or submits the form.
 - **Cloudflare Worker** — the brains. Receives Slack webhooks, talks to Stripe and Google, replies to Slack. Runs on Cloudflare's free tier. Configured at [dash.cloudflare.com](https://dash.cloudflare.com).
@@ -100,7 +100,7 @@ These are sensitive — leaking them could let someone impersonate the bot, read
 | `SLACK_SIGNING_SECRET` | Slack uses this to prove webhooks really came from Slack. | api.slack.com/apps → Create an Event → Basic Information → App Credentials → Signing Secret. **A director can give you read access to the app.** |
 | `SLACK_BOT_TOKEN` | The Slack bot's identity (`xoxb-...`). Lets the Worker post messages as the bot. | api.slack.com/apps → Create an Event → OAuth & Permissions → Bot User OAuth Token. **Same access as above.** |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | The full JSON private key for the service account that books events. **Treat like a password.** | console.cloud.google.com → IAM & Admin → Service Accounts → click the bot account → Keys → Create new key (JSON). Pipe the file into `wrangler secret put` — don't paste it. **Ask a director with GCP access.** |
-| `STRIPE_SECRET_KEY` | Read-only Stripe API key for the membership check. | dashboard.stripe.com → Developers → API keys → Restricted keys → Create. Permissions: Customers Read, Subscriptions Read, **nothing else**. **Ask a director with Stripe access.** |
+| `STRIPE_SECRET_KEY` | Read-only Stripe API key for the membership check, `/stats` lookups, and lifetime contribution sums. | dashboard.stripe.com → Developers → API keys → Restricted keys → Create. Permissions, all **Read** only: **Customers**, **Customer search** (if shown separately), **Subscriptions**, **Products**, **Events**, **Invoices**. Nothing else. The bot never writes. **Ask a director with Stripe access.** |
 | `STRIPE_MEMBERSHIP_PRICE_IDS` | Comma-separated list of Stripe Price IDs that count as a membership. | dashboard.stripe.com → Product catalog → click each membership product → copy each Price ID. **Director can pull these in two minutes.** |
 
 If you're rotating one of the sensitive secrets (because someone left, or it leaked), you also need to invalidate the old one — revoke the Stripe key, regenerate the service-account key, etc. **Ask a director to help; this is the kind of thing where small mistakes have big consequences.**
@@ -150,6 +150,17 @@ Slack workspace (Farset Labs)
   │                          │     └─ yes → open booking modal
   │                          └─ done
   │
+  ├─ /stats ──────────► POST /slack/commands
+  │                          │
+  │                          ├─ verify Slack signature
+  │                          ├─ ack with empty 200 (async work follows)
+  │                          └─ in waitUntil:
+  │                                ├─ Slack: get user's email
+  │                                ├─ Stripe: products + active membership
+  │                                ├─ Stripe: lab stats (active subs walk + leavers events) ‖
+  │                                │   Stripe: lifetime invoices
+  │                                └─ POST to response_url with rendered ephemeral
+  │
   └─ Modal submit ──► POST /slack/interactions
                               │
                               ├─ list events across selected rooms (events.list)
@@ -167,7 +178,7 @@ src/
 ├── index.ts     # Worker entrypoint — routes /health, /slack/commands, /slack/interactions, glue logic
 ├── google.ts    # Service-account JWT + DWD, room events listing, event creation
 ├── slack.ts     # Signature verification, modal builders, users.info, DM + channel posting
-├── stripe.ts    # Membership lookup (customers.search → subscriptions list)
+├── stripe.ts    # Membership lookup, lab stats walk (active subs + leaver events), lifetime invoice sum, product-name map
 └── types.ts     # Env, Room, SlackBlockValue, etc.
 ```
 
@@ -217,9 +228,10 @@ A non-exhaustive list of "would be nice if someone built this" — pick whatever
 
 ## Operational notes
 
-- **Conflict detection** runs `events.list` on every selected room calendar before booking (so it can show event titles, not just busy ranges). If any room has a conflicting event, the modal stays open with a count and a link to the public calendar.
-- **Privacy** — events with `visibility: private` or `confidential` are reported as "A private booking" in conflict messages instead of leaking their title.
+- **Conflict detection** runs `events.list` on every selected room calendar before booking. If any room has a conflicting event, the modal stays open with a count of conflicts and a link to the public calendar — no event titles are exposed.
 - **Room auto-accept** is handled by Workspace's native resource booking. If a room declines (e.g. its policy refuses the user), the booker gets a warning in their DM. The channel announcement still goes out.
 - **Channel announcement** is optional — if `EVENTS_CHANNEL_ID` isn't set, only the DM goes out. The bot must be a member of the announcement channel (`/invite @Create an Event` from inside the channel).
+- **Mrkdwn injection** — booker-supplied text (title, description, room names) is HTML-escaped before being broadcast to the public channel, so members can't inject `<!channel>`, `<@U…>`, or other Slack control sequences.
+- **Stripe error redaction** — when a Stripe call fails, the response body is logged with any `rk_/sk_/pk_*_…` key suffixes redacted before reaching `wrangler tail`.
 - **Token caching** — Google service-account JWTs are cached in-memory per Worker isolate.
-- **No caching on Stripe** — each `/create-an-event` invocation hits Stripe. Fine at hackerspace scale.
+- **No caching on Stripe** — each `/create-an-event` and `/stats` invocation hits Stripe. Fine at hackerspace scale.
