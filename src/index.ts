@@ -201,7 +201,7 @@ async function handleBookingSubmission(
     const fullDescription = [
       userDescription,
       "",
-      `Booked by ${userName} via Slack /create-an-event`,
+      `Booked by @${userName} using /create-an-event on Slack`,
     ]
       .filter(Boolean)
       .join("\n");
