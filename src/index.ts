@@ -183,12 +183,17 @@ async function handleBookingSubmission(
       const shown = allLines.slice(0, MAX_LINES);
       const remaining = allLines.length - shown.length;
       const overflow = remaining > 0 ? `\n…and ${remaining} more` : "";
+      const total = allLines.length;
+      const header =
+        total === 1
+          ? "There's a conflict with another booking:"
+          : `There's a conflict with ${total} other bookings:`;
       return jsonResponse({
         response_action: "errors",
         errors: {
           rooms_block:
-            `Conflicts (Belfast time):\n${shown.join("\n")}${overflow}\n\n` +
-            `See what's free at https://www.farsetlabs.org.uk/whats-on/`,
+            `${header}\n${shown.join("\n")}${overflow}\n\n` +
+            `See what's on at https://www.farsetlabs.org.uk/whats-on/`,
         },
       });
     }
