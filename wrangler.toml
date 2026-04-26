@@ -13,3 +13,4 @@ compatibility_date = "2025-01-01"
 #   STRIPE_MEMBERSHIP_PRICE_IDS   — comma-separated Stripe Price IDs that count as membership
 #   MEMBERSHIP_SIGNUP_URL         — link non-members are pointed to (e.g. https://www.farsetlabs.org.uk/)
 #   STRIPE_BILLING_PORTAL_URL     — Stripe customer portal login link for self-service email/payment updates
+#   EVENTS_CHANNEL_ID             — (optional) Slack channel ID to announce bookings to (e.g. C0123ABC456)

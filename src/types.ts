@@ -9,6 +9,7 @@ export interface Env {
   STRIPE_MEMBERSHIP_PRICE_IDS: string;
   MEMBERSHIP_SIGNUP_URL: string;
   STRIPE_BILLING_PORTAL_URL: string;
+  EVENTS_CHANNEL_ID?: string;
 }
 
 export interface Room {

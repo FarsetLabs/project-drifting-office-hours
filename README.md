@@ -18,6 +18,8 @@ In any channel in the Farset Labs Slack, type:
 
 A form pops up. Fill in **Title**, optional **Description**, **Start**, **End**, and tick **one or more rooms**. Hit **Book**. You'll get a DM within a few seconds with a link to the calendar event.
 
+If `EVENTS_CHANNEL_ID` is configured, the booking is also posted to a Slack channel (typically `#events`) with the title, time, rooms, your @-mention, and a link to the calendar event.
+
 ### "Members only" — what's that about?
 
 The bot only accepts bookings from people with an active Stripe membership. When you run `/create-an-event`, it:
@@ -83,6 +85,7 @@ These are non-sensitive or you can find them yourself.
 | `ROOMS_JSON` | JSON array of `{ name, email, capacity }` for each bookable room. | admin.google.com → Buildings and resources → click each room → copy the **Resource email** field. Capacity is the number you set when creating the room. |
 | `GOOGLE_CALENDAR_ID` | The Farset Labs Events calendar's ID. | calendar.google.com → "Farset Labs Events" → Settings and sharing → "Calendar ID" field. |
 | `GOOGLE_IMPERSONATE_SUBJECT` | Workspace user the bot acts as (currently `services@farsetlabs.org.uk`). | Just an email address. The user has to actually exist in Workspace and have access to the calendars. |
+| `EVENTS_CHANNEL_ID` *(optional)* | Slack channel ID where bookings are announced (e.g. `#events`). Leave unset to disable channel announcements. | In Slack, right-click the channel → "Copy link" → grab the trailing `C…` segment. **Then `/invite @Create an Event` in that channel** — the bot must be a member to post there. |
 
 #### Ask a director for these
 
@@ -145,10 +148,12 @@ Slack workspace (Farset Labs)
   │
   └─ Modal submit ──► POST /slack/interactions
                               │
-                              ├─ freeBusy across selected rooms
+                              ├─ list events across selected rooms (events.list)
+                              │   → if any conflict, surface "There's a conflict with N other bookings"
                               ├─ create one event on the Events calendar
                               │   with rooms attached as resource attendees
-                              └─ DM booker with calendar link
+                              ├─ DM booker with calendar link
+                              └─ (if EVENTS_CHANNEL_ID set) post announcement to #events channel
 ```
 
 ### Code map
@@ -156,8 +161,8 @@ Slack workspace (Farset Labs)
 ```
 src/
 ├── index.ts     # Worker entrypoint — routes /health, /slack/commands, /slack/interactions, glue logic
-├── google.ts    # Service-account JWT + DWD, freebusy queries, event creation
-├── slack.ts     # Signature verification, modal builders, users.info, postDM
+├── google.ts    # Service-account JWT + DWD, room events listing, event creation
+├── slack.ts     # Signature verification, modal builders, users.info, DM + channel posting
 ├── stripe.ts    # Membership lookup (customers.search → subscriptions list)
 └── types.ts     # Env, Room, SlackBlockValue, etc.
 ```
@@ -184,11 +189,16 @@ No code change needed — the modal reads from `ROOMS_JSON` on every open.
 A non-exhaustive list of "would be nice if someone built this" — pick whatever scratches your itch:
 
 - **`/my-bookings`** — list your future bookings.
-- **`/cancel-event`** — cancel one of your bookings.
-- **Auto-post bookings to `#events`** — currently only the booker gets a DM.
+- **`/cancel-booking`** — cancel one of your bookings without leaving Slack.
+- **Public-vs-private booking distinction** — currently every booking ends up on the public Events calendar; not every meeting needs that.
+- **Cache the membership check** — Stripe gets pinged every time someone runs the command. Workers KV could cache for an hour per user.
+- **Repeat-this-booking helper** — DM button after a successful booking that pre-fills the modal for next week.
+- **Room descriptions in the dropdown** — extend `ROOMS_JSON` with a `description` field so newcomers know what each room is good for.
+- **Trustee/external-visitor override** — allowlist of Slack IDs that can bypass the Stripe gate to book for visiting groups.
+- **Post-booking reminders** — Cloudflare Cron Trigger that DMs bookers the day before.
+- **Lightweight charity analytics** — weekly digest to trustees: top rooms, top members, occupancy by hour.
 - **Recurring bookings** — Wednesday Hack Night, weekly knit-and-natter, etc.
 - **Better duration parsing** — let people type "tomorrow 7-9pm" instead of using two pickers.
-- **Per-room booking rules** — e.g. Meeting Room max 2h per day per person.
 - **Past-time guard** — currently you can technically book yesterday.
 - **Tier-aware UI** — show different rooms / time slots depending on membership tier.
 - **Tests** — there are none. Bun has a test runner, vitest works too. PRs welcome.
@@ -203,7 +213,9 @@ A non-exhaustive list of "would be nice if someone built this" — pick whatever
 
 ## Operational notes
 
-- **Conflict detection** runs `freeBusy.query` on every selected room before booking. If any room is busy, the modal stays open with a per-room error.
-- **Room auto-accept** is handled by Workspace's native resource booking. If a room declines (e.g. its policy refuses the user), the booker gets a warning in their DM.
+- **Conflict detection** runs `events.list` on every selected room calendar before booking (so it can show event titles, not just busy ranges). If any room has a conflicting event, the modal stays open with a count and a link to the public calendar.
+- **Privacy** — events with `visibility: private` or `confidential` are reported as "A private booking" in conflict messages instead of leaking their title.
+- **Room auto-accept** is handled by Workspace's native resource booking. If a room declines (e.g. its policy refuses the user), the booker gets a warning in their DM. The channel announcement still goes out.
+- **Channel announcement** is optional — if `EVENTS_CHANNEL_ID` isn't set, only the DM goes out. The bot must be a member of the announcement channel (`/invite @Create an Event` from inside the channel).
 - **Token caching** — Google service-account JWTs are cached in-memory per Worker isolate.
 - **No caching on Stripe** — each `/create-an-event` invocation hits Stripe. Fine at hackerspace scale.

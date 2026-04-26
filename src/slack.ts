@@ -5,10 +5,11 @@ const FIVE_MINUTES = 5 * 60;
 export const TINKER_LINK =
   ":wrench: Want to change how this works? <https://github.com/FarsetLabs/project-drifting-office-hours|Edit on GitHub>.";
 
-function tinkerContextBlock(): object {
+function tinkerContextBlock(suffix?: string): object {
+  const text = suffix ? `${TINKER_LINK}\n${suffix}` : TINKER_LINK;
   return {
     type: "context",
-    elements: [{ type: "mrkdwn", text: TINKER_LINK }],
+    elements: [{ type: "mrkdwn", text }],
   };
 }
 
@@ -74,7 +75,28 @@ export async function postDM(
   });
   const data = (await res.json()) as { ok: boolean; error?: string };
   if (!data.ok) {
-    console.error("chat.postMessage failed:", data.error);
+    console.error("chat.postMessage (DM) failed:", data.error);
+  }
+}
+
+export async function postChannelMessage(
+  botToken: string,
+  channelId: string,
+  text: string,
+  blocks: object[],
+): Promise<void> {
+  const res = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${botToken}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ channel: channelId, text, blocks, unfurl_links: false }),
+  });
+  const data = (await res.json()) as { ok: boolean; error?: string };
+  if (!data.ok) {
+    console.error("chat.postMessage (channel) failed:", data.error);
+    throw new Error(`channel post failed: ${data.error}`);
   }
 }
 
@@ -111,7 +133,11 @@ export function buildErrorModal(message: string): object {
   };
 }
 
-export function buildBookingModal(rooms: Room[], greeting?: string): object {
+export function buildBookingModal(
+  rooms: Room[],
+  greeting?: string,
+  funFact?: string,
+): object {
   const roomOptions = rooms.map((r) => ({
     text: { type: "plain_text", text: `${r.name} (${r.capacity} seats)` },
     value: r.email,
@@ -175,7 +201,7 @@ export function buildBookingModal(rooms: Room[], greeting?: string): object {
       },
     },
     { type: "divider" },
-    tinkerContextBlock(),
+    tinkerContextBlock(funFact),
   );
   return {
     type: "modal",

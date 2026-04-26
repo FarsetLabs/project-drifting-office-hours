@@ -4,6 +4,7 @@ import {
   buildErrorModal,
   getUserEmail,
   openModal,
+  postChannelMessage,
   postDM,
   TINKER_LINK,
   verifySlackSignature,
@@ -60,7 +61,7 @@ async function handleSlashCommand(
     openModal(
       env.SLACK_BOT_TOKEN,
       triggerId,
-      buildBookingModal(rooms, gate.greeting),
+      buildBookingModal(rooms, gate.greeting, gate.funFact),
     ).catch((err) => console.error("Failed to open modal:", err)),
   );
 
@@ -91,7 +92,7 @@ async function handleInteraction(
     if (shortcut.callback_id === "open_booking_modal") {
       const gate = await checkMembership(env, shortcut.user.id);
       const view = gate.allowed
-        ? buildBookingModal(loadRooms(env), gate.greeting)
+        ? buildBookingModal(loadRooms(env), gate.greeting, gate.funFact)
         : buildErrorModal(gate.message);
       ctx.waitUntil(
         openModal(env.SLACK_BOT_TOKEN, shortcut.trigger_id, view).catch((err) =>
@@ -171,29 +172,13 @@ async function handleBookingSubmission(
       .filter((c) => c.events.length > 0);
 
     if (conflicts.length > 0) {
-      const allLines = conflicts.flatMap((c) =>
-        c.events.map((e) => {
-          const isPrivate =
-            e.visibility === "private" || e.visibility === "confidential";
-          const title = isPrivate ? "A private booking" : e.summary || "An event";
-          return `• ${title} is happening in the ${c.room.name} — ${formatBusyRange(e.start, e.end)}`;
-        }),
-      );
-      const MAX_LINES = 10;
-      const shown = allLines.slice(0, MAX_LINES);
-      const remaining = allLines.length - shown.length;
-      const overflow = remaining > 0 ? `\n…and ${remaining} more` : "";
-      const total = allLines.length;
-      const header =
-        total === 1
-          ? "There's a conflict with another booking:"
-          : `There's a conflict with ${total} other bookings:`;
+      const total = conflicts.reduce((n, c) => n + c.events.length, 0);
+      const subject =
+        total === 1 ? "another booking" : `${total} other bookings`;
       return jsonResponse({
         response_action: "errors",
         errors: {
-          rooms_block:
-            `${header}\n${shown.join("\n")}${overflow}\n\n` +
-            `See what's on at https://www.farsetlabs.org.uk/whats-on/`,
+          rooms_block: `There's a conflict with ${subject}. See what's on at https://www.farsetlabs.org.uk/whats-on/`,
         },
       });
     }
@@ -225,11 +210,22 @@ async function handleBookingSubmission(
           const note = declined.length
             ? `\n:warning: Declined: ${declined.join(", ")}. Check those rooms' auto-accept settings.`
             : "";
-          await postDM(
-            env.SLACK_BOT_TOKEN,
-            userId,
-            `:white_check_mark: Booked *${title}* in *${roomNames}*.\n${event.htmlLink}${note}\n\n${TINKER_LINK}`,
-          );
+          await Promise.all([
+            postDM(
+              env.SLACK_BOT_TOKEN,
+              userId,
+              `:white_check_mark: Booked *${title}* in *${roomNames}*.\n${event.htmlLink}${note}\n\n${TINKER_LINK}`,
+            ),
+            announceToChannel(env, {
+              title,
+              userDescription,
+              roomNames,
+              startISO,
+              endISO,
+              userId,
+              eventLink: event.htmlLink,
+            }),
+          ]);
         } catch (err) {
           console.error("Async booking failed:", err);
           await postDM(
@@ -260,10 +256,60 @@ function loadRooms(env: Env): Room[] {
   }
 }
 
+async function announceToChannel(
+  env: Env,
+  args: {
+    title: string;
+    userDescription: string;
+    roomNames: string;
+    startISO: string;
+    endISO: string;
+    userId: string;
+    eventLink: string;
+  },
+): Promise<void> {
+  if (!env.EVENTS_CHANNEL_ID) return;
+  const range = formatBusyRange(args.startISO, args.endISO);
+  const headerLines = [
+    `:date: *${args.title}*`,
+    `${range}  ·  ${args.roomNames}`,
+  ];
+  if (args.userDescription) {
+    headerLines.push("", args.userDescription);
+  }
+  const blocks = [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: headerLines.join("\n") },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text:
+            `Booked by <@${args.userId}> using \`/create-an-event\`  ·  <${args.eventLink}|See on calendar>  ·  ${TINKER_LINK}`,
+        },
+      ],
+    },
+  ];
+  const fallback = `New booking: ${args.title} — ${range} in ${args.roomNames}. ${args.eventLink}`;
+  try {
+    await postChannelMessage(
+      env.SLACK_BOT_TOKEN,
+      env.EVENTS_CHANNEL_ID,
+      fallback,
+      blocks,
+    );
+  } catch (err) {
+    console.error("Channel announcement failed:", err);
+  }
+}
+
 async function checkMembership(
   env: Env,
   slackUserId: string,
-): Promise<{ allowed: boolean; message: string; greeting?: string }> {
+): Promise<{ allowed: boolean; message: string; greeting?: string; funFact?: string }> {
   try {
     const email = await getUserEmail(env.SLACK_BOT_TOKEN, slackUserId);
     if (!email) {
@@ -283,14 +329,14 @@ async function checkMembership(
     );
     if (active) {
       const duration = memberSince ? humanizeDuration(memberSince) : null;
-      const lines = [
+      const greeting = [
         "*Let's create an event!*",
         "Bookings show up on the public <https://www.farsetlabs.org.uk/whats-on/|What's On> calendar — use this to book rooms or run events.",
-      ];
-      if (duration) {
-        lines.push(`_Fun fact: you've been a Farset Labs member for *${duration}*._`);
-      }
-      return { allowed: true, message: "", greeting: lines.join("\n\n") };
+      ].join("\n\n");
+      const funFact = duration
+        ? `:partying_face: You've been a Farset Labs member for *${duration}*.`
+        : undefined;
+      return { allowed: true, message: "", greeting, funFact };
     }
 
     return {
