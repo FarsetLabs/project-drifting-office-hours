@@ -231,7 +231,7 @@ A non-exhaustive list of "would be nice if someone built this" — pick whatever
 - **Conflict detection** runs `events.list` on every selected room calendar before booking. If any room has a conflicting event, the modal stays open with a count of conflicts and a link to the public calendar — no event titles are exposed.
 - **Room auto-accept** is handled by Workspace's native resource booking. If a room declines (e.g. its policy refuses the user), the booker gets a warning in their DM. The channel announcement still goes out.
 - **Channel announcement** is optional — if `EVENTS_CHANNEL_ID` isn't set, only the DM goes out. The bot must be a member of the announcement channel (`/invite @Create an Event` from inside the channel).
-- **Mrkdwn injection** — booker-supplied text (title, description, room names) is HTML-escaped before being broadcast to the public channel, so members can't inject `<!channel>`, `<@U…>`, or other Slack control sequences.
+- **Markdwn injection** — booker-supplied text (title, description, room names) is HTML-escaped before being broadcast to the public channel, so members can't inject `<!channel>`, `<@U…>`, or other Slack control sequences.
 - **Stripe error redaction** — when a Stripe call fails, the response body is logged with any `rk_/sk_/pk_*_…` key suffixes redacted before reaching `wrangler tail`.
 - **Token caching** — Google service-account JWTs are cached in-memory per Worker isolate.
 - **No caching on Stripe** — each `/create-an-event` and `/stats` invocation hits Stripe. Fine at hackerspace scale.
