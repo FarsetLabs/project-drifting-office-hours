@@ -13,4 +13,10 @@ compatibility_date = "2025-01-01"
 #   STRIPE_MEMBERSHIP_PRICE_IDS   — comma-separated Stripe Price IDs that count as membership
 #   MEMBERSHIP_SIGNUP_URL         — link non-members are pointed to (e.g. https://www.farsetlabs.org.uk/)
 #   STRIPE_BILLING_PORTAL_URL     — Stripe customer portal login link for self-service email/payment updates
+#   DOOR_CODE                     — current Farset Labs door code, surfaced via /door-code to members
+#   BUSINESS_PARK_GATES_PASSWORD  — password for the business park security telecom (after-hours gate access)
+#   WIFI_MEMBER_SSID              — members-only Wi-Fi network name
+#   WIFI_MEMBER_PASSWORD          — members-only Wi-Fi password
+#   WIFI_GUEST_SSID               — guest Wi-Fi network name (shared with non-members and visitors)
+#   WIFI_GUEST_PASSWORD           — guest Wi-Fi password
 #   EVENTS_CHANNEL_ID             — (optional) Slack channel ID to announce bookings to (e.g. C0123ABC456)
