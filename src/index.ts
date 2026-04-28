@@ -57,7 +57,7 @@ async function handleSlashCommand(
   const userId = params.get("user_id");
   const responseUrl = params.get("response_url");
 
-  if (command === "/stats") {
+  if (command === "/stats" || command === "/played") {
     if (!userId || !responseUrl) {
       return new Response("Missing user_id or response_url", { status: 400 });
     }
@@ -65,9 +65,10 @@ async function handleSlashCommand(
       return new Response("Invalid response_url", { status: 400 });
     }
     const userName = params.get("user_name") ?? "you";
+    const personalOnly = command === "/played";
     ctx.waitUntil(
-      computeAndSendStats(env, userId, userName, responseUrl).catch((err) =>
-        console.error("Stats handler failed:", err),
+      computeAndSendStats(env, userId, userName, responseUrl, { personalOnly }).catch(
+        (err) => console.error("Stats handler failed:", err),
       ),
     );
     return new Response("", { status: 200 });
@@ -511,7 +512,9 @@ async function computeAndSendStats(
   slackUserId: string,
   slackUserName: string,
   responseUrl: string,
+  options: { personalOnly?: boolean } = {},
 ): Promise<void> {
+  const personalOnly = options.personalOnly === true;
   try {
     const email = await getUserEmail(env.SLACK_BOT_TOKEN, slackUserId);
     if (!email) {
@@ -557,52 +560,68 @@ async function computeAndSendStats(
       return;
     }
 
-    const [labStats, contributionPence] = await Promise.all([
-      getLabStats(
-        env.STRIPE_SECRET_KEY,
-        priceIds,
-        membership.memberSince,
-        productNames,
-      ),
-      getLifetimeContributionPence(env.STRIPE_SECRET_KEY, membership.customerIds),
-    ]);
+    let lines: string[];
+    if (personalOnly) {
+      lines = [
+        `Total time as a member: ${preciseDuration(membership.memberSince)} (joined on ${formatOrdinalDateTime(membership.memberSince)})`,
+      ];
+    } else {
+      const [labStats, contributionPence] = await Promise.all([
+        getLabStats(
+          env.STRIPE_SECRET_KEY,
+          priceIds,
+          membership.memberSince,
+          productNames,
+        ),
+        getLifetimeContributionPence(env.STRIPE_SECRET_KEY, membership.customerIds),
+      ]);
+      const rank = labStats.olderThanUser + 1;
+      const joinDate = formatOrdinalDate(membership.memberSince);
+      const contribution = formatPounds(contributionPence);
+      const tierSplitText = orderedTierBreakdown(labStats.tierBreakdown)
+        .map(([name, count]) => `${name} ${count}`)
+        .join(" · ");
+      const openedDate = formatOrdinalDate(unixFromIsoDate(FARSET_LABS_OPENED_AT));
+      const birthdayMsg = nextBirthdayMessage(FARSET_LABS_OPENED_AT);
+      lines = [
+        `> *:bar_chart: @${slackUserName}*`,
+        `> `,
+        `> • You're the ${ordinal(rank)} longest-active member, active since ${joinDate} (${humanizeDuration(membership.memberSince)})`,
+        `> • You've contributed ${contribution} to the hackerspace :green_heart:`,
+        `> `,
+        `> :credit_card: You're on ${membership.tier.productName} membership. <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>.`,
+        `> `,
+        `> *:farsetlabs: Farset Labs Hackerspace*`,
+        `> `,
+        `> • ${labStats.total} active members: ${tierSplitText}`,
+        `> • ${labStats.joinedLast30} joined and ${labStats.leftLast30} left in the last 30 days`,
+        `> • Open since ${openedDate} — next birthday is ${birthdayMsg}.`,
+        `> `,
+        `> ${TINKER_LINK}`,
+      ];
+    }
 
-    const rank = labStats.olderThanUser + 1;
-    const duration = humanizeDuration(membership.memberSince);
-    const joinDate = formatOrdinalDate(membership.memberSince);
-    const contribution = formatPounds(contributionPence);
-    const tierSplitText = orderedTierBreakdown(labStats.tierBreakdown)
-      .map(([name, count]) => `${name} ${count}`)
-      .join(" · ");
-    const openedDate = formatOrdinalDate(unixFromIsoDate(FARSET_LABS_OPENED_AT));
-    const birthdayMsg = nextBirthdayMessage(FARSET_LABS_OPENED_AT);
-
-    const blockquote = [
-      `> *:bar_chart: @${slackUserName}*`,
-      `> `,
-      `> • You're the ${ordinal(rank)} longest-active member, active since ${joinDate} (${duration})`,
-      `> • You've contributed ${contribution} to the hackerspace :green_heart:`,
-      `> `,
-      `> :credit_card: You're on ${membership.tier.productName} membership. <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>.`,
-      `> `,
-      `> *:farsetlabs: Farset Labs Hackerspace*`,
-      `> `,
-      `> • ${labStats.total} active members: ${tierSplitText}`,
-      `> • ${labStats.joinedLast30} joined and ${labStats.leftLast30} left in the last 30 days`,
-      `> • Open since ${openedDate} — next birthday is ${birthdayMsg}.`,
-      `> `,
-      `> ${TINKER_LINK}`,
-    ].join("\n");
+    const blockquote = lines.join("\n");
 
     await postToResponseUrl(responseUrl, {
       response_type: "ephemeral",
-      text: `Your Farset Labs membership and lab stats.`,
-      blocks: [
-        {
-          type: "section",
-          text: { type: "mrkdwn", text: blockquote },
-        },
-      ],
+      text: personalOnly
+        ? `Your Farset Labs membership stats.`
+        : `Your Farset Labs membership and lab stats.`,
+      blocks: personalOnly
+        ? [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: blockquote },
+            },
+            tinkerContextBlock(),
+          ]
+        : [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: blockquote },
+            },
+          ],
     });
   } catch (err) {
     console.error("Stats compute failed:", err);
@@ -626,6 +645,18 @@ function ordinal(n: number): string {
     default:
       return `${n}th`;
   }
+}
+
+function formatOrdinalDateTime(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(d);
+  return `${formatOrdinalDate(unixSeconds)} at ${time}`;
 }
 
 function formatOrdinalDate(unixSeconds: number): string {
@@ -694,6 +725,51 @@ function orderedTierBreakdown(
   return Object.entries(breakdown)
     .filter(([, count]) => count > 0)
     .sort(([a], [b]) => rank(a) - rank(b));
+}
+
+function preciseDuration(unixStartSeconds: number): string {
+  const start = new Date(unixStartSeconds * 1000);
+  const now = new Date();
+  if (now.getTime() <= start.getTime()) {
+    return "0 years, 0 days, 0 hours, 0 minutes, 0 seconds";
+  }
+
+  let years = now.getUTCFullYear() - start.getUTCFullYear();
+  let days = now.getUTCDate() - start.getUTCDate();
+  let monthDelta = now.getUTCMonth() - start.getUTCMonth();
+  let hours = now.getUTCHours() - start.getUTCHours();
+  let minutes = now.getUTCMinutes() - start.getUTCMinutes();
+  let seconds = now.getUTCSeconds() - start.getUTCSeconds();
+
+  if (seconds < 0) { seconds += 60; minutes -= 1; }
+  if (minutes < 0) { minutes += 60; hours -= 1; }
+  if (hours < 0) { hours += 24; days -= 1; }
+  if (days < 0) {
+    const prevMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+    days += prevMonth.getUTCDate();
+    monthDelta -= 1;
+  }
+  if (monthDelta < 0) { monthDelta += 12; years -= 1; }
+
+  // Roll any leftover whole months into days using the calendar month lengths
+  // walked forward from the start date.
+  let cursorYear = start.getUTCFullYear();
+  let cursorMonth = start.getUTCMonth() + 12 * years;
+  while (monthDelta > 0) {
+    const monthLen = new Date(Date.UTC(cursorYear, cursorMonth + 1, 0)).getUTCDate();
+    days += monthLen;
+    cursorMonth += 1;
+    monthDelta -= 1;
+  }
+
+  const part = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  const parts: string[] = [];
+  if (years > 0) parts.push(part(years, "year"));
+  if (days > 0) parts.push(part(days, "day"));
+  if (hours > 0) parts.push(part(hours, "hour"));
+  if (minutes > 0) parts.push(part(minutes, "minute"));
+  if (seconds > 0) parts.push(part(seconds, "second"));
+  return parts.length > 0 ? parts.join(", ") : "0 seconds";
 }
 
 function humanizeDuration(unixStartSeconds: number): string {
