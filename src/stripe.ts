@@ -213,6 +213,56 @@ export async function getLifetimeContributionPence(
   return total;
 }
 
+export interface StripeActiveMember {
+  email: string;
+  memberSince: number;
+}
+
+interface StripeSubscriptionListExpanded {
+  data: Array<
+    Omit<StripeSubscription, "customer"> & {
+      customer: string | { id: string; email: string | null };
+    }
+  >;
+  has_more: boolean;
+}
+
+export async function listActiveMembers(
+  apiKey: string,
+  priceIds: string[],
+): Promise<StripeActiveMember[]> {
+  const priceSet = new Set(priceIds);
+  const earliestByEmail = new Map<string, number>();
+  let startingAfter: string | undefined;
+  for (let page = 0; page < 30; page++) {
+    const url = new URL("https://api.stripe.com/v1/subscriptions");
+    url.searchParams.set("status", "active");
+    url.searchParams.set("limit", "100");
+    url.searchParams.append("expand[]", "data.customer");
+    if (startingAfter) url.searchParams.set("starting_after", startingAfter);
+
+    const res = await stripeFetch<StripeSubscriptionListExpanded>(apiKey, url.toString());
+    for (const sub of res.data) {
+      const matchingItem = sub.items.data.find((item) => priceSet.has(item.price.id));
+      if (!matchingItem) continue;
+      const customer = sub.customer;
+      const email = typeof customer === "object" ? customer.email?.toLowerCase() : null;
+      if (!email) continue;
+      const prev = earliestByEmail.get(email);
+      if (prev === undefined || sub.start_date < prev) {
+        earliestByEmail.set(email, sub.start_date);
+      }
+    }
+    if (!res.has_more || res.data.length === 0) break;
+    const last = res.data[res.data.length - 1];
+    startingAfter = last.id;
+  }
+  return Array.from(earliestByEmail.entries()).map(([email, memberSince]) => ({
+    email,
+    memberSince,
+  }));
+}
+
 export async function getProductNames(apiKey: string): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   let startingAfter: string | undefined;

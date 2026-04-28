@@ -60,6 +60,48 @@ export async function findActiveMembership(
   };
 }
 
+export interface ActiveMember {
+  email: string;
+  memberSince: number;
+}
+
+export async function listActiveMembers(
+  apiEmail: string,
+  apiPassword: string,
+  invoicingBusinessId: string,
+): Promise<ActiveMember[]> {
+  const out: ActiveMember[] = [];
+  let page = 1;
+  for (let safety = 0; safety < 50; safety++) {
+    const filters = new URLSearchParams({
+      coworker_Tariff: "notnull",
+      coworker_Active: "true",
+      coworker_InvoicingBusiness: invoicingBusinessId,
+      coworker_Archived: "false",
+      orderBy: "RegistrationDate",
+      dir: "1",
+      size: "100",
+      page: String(page),
+    });
+    const url = `${BASE}/spaces/coworkers?${filters}`;
+    const res = await nexudusFetch<NexudusListResponse<NexudusCoworker>>(
+      apiEmail,
+      apiPassword,
+      url,
+    );
+    for (const r of res.Records) {
+      if (!r.Email || !r.RegistrationDate) continue;
+      out.push({
+        email: r.Email.toLowerCase(),
+        memberSince: Math.floor(new Date(r.RegistrationDate).getTime() / 1000),
+      });
+    }
+    if (!res.HasNextPage || res.Records.length === 0) break;
+    page += 1;
+  }
+  return out;
+}
+
 async function nexudusFetch<T>(
   apiEmail: string,
   apiPassword: string,

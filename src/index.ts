@@ -4,6 +4,7 @@ import {
   buildErrorModal,
   escapeMrkdwn,
   getUserEmail,
+  listWorkspaceEmailToId,
   openModal,
   postChannelMessage,
   postDM,
@@ -17,8 +18,12 @@ import {
   getLabStats,
   getLifetimeContributionPence,
   getProductNames,
+  listActiveMembers as listActiveStripeMembers,
 } from "./stripe";
-import { findActiveMembership as findActiveNexudusMembership } from "./nexudus";
+import {
+  findActiveMembership as findActiveNexudusMembership,
+  listActiveMembers as listActiveNexudusMembers,
+} from "./nexudus";
 
 const FARSET_LABS_OPENED_AT = "2012-04-06";
 const TIER_ORDER = ["Standard", "Professional", "Professional + Desk", "Casual"];
@@ -85,6 +90,21 @@ async function handleSlashCommand(
     ctx.waitUntil(
       sendDoorCode(env, userId, responseUrl).catch((err) =>
         console.error("Door code handler failed:", err),
+      ),
+    );
+    return new Response("", { status: 200 });
+  }
+
+  if (command === "/members") {
+    if (!userId || !responseUrl) {
+      return new Response("Missing user_id or response_url", { status: 400 });
+    }
+    if (!responseUrl.startsWith("https://hooks.slack.com/")) {
+      return new Response("Invalid response_url", { status: 400 });
+    }
+    ctx.waitUntil(
+      sendMembersList(env, userId, responseUrl).catch((err) =>
+        console.error("Members handler failed:", err),
       ),
     );
     return new Response("", { status: 200 });
@@ -470,6 +490,79 @@ async function sendDoorCode(
     text: body,
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: body } },
+      tinkerContextBlock(),
+    ],
+  });
+}
+
+async function sendMembersList(
+  env: Env,
+  slackUserId: string,
+  responseUrl: string,
+): Promise<void> {
+  const gate = await checkMembership(env, slackUserId);
+  if (!gate.allowed) {
+    await postToResponseUrl(responseUrl, {
+      response_type: "ephemeral",
+      text: gate.message,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: gate.message } },
+        tinkerContextBlock(),
+      ],
+    });
+    return;
+  }
+
+  const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const [stripeList, nexudusList, slackEmailToId] = await Promise.all([
+    listActiveStripeMembers(env.STRIPE_SECRET_KEY, priceIds),
+    listActiveNexudusMembers(
+      env.NEXUDUS_EMAIL,
+      env.NEXUDUS_PASSWORD,
+      env.NEXUDUS_BUSINESS_ID,
+    ),
+    listWorkspaceEmailToId(env.SLACK_BOT_TOKEN),
+  ]);
+
+  const earliestByEmail = new Map<string, number>();
+  for (const m of [...stripeList, ...nexudusList]) {
+    const prev = earliestByEmail.get(m.email);
+    if (prev === undefined || m.memberSince < prev) {
+      earliestByEmail.set(m.email, m.memberSince);
+    }
+  }
+
+  const inSlack: Array<{ id: string; memberSince: number }> = [];
+  let notInSlack = 0;
+  for (const [email, memberSince] of earliestByEmail) {
+    const id = slackEmailToId.get(email);
+    if (id) inSlack.push({ id, memberSince });
+    else notInSlack += 1;
+  }
+  inSlack.sort((a, b) => a.memberSince - b.memberSince);
+
+  const memberLines = inSlack.map(
+    (m) => `<@${m.id}> — member since ${formatOrdinalDate(m.memberSince)}`,
+  );
+  const lines = [
+    `*:farsetlabs: ${inSlack.length} active Farset Labs members on Slack — oldest first*`,
+    "",
+    ...memberLines,
+  ];
+  if (notInSlack > 0) {
+    lines.push(
+      "",
+      `_(plus ${notInSlack} active member${notInSlack === 1 ? "" : "s"} not on Slack.)_`,
+    );
+  }
+
+  await postToResponseUrl(responseUrl, {
+    response_type: "ephemeral",
+    text: `${inSlack.length} active Farset Labs members on Slack.`,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
       tinkerContextBlock(),
     ],
   });

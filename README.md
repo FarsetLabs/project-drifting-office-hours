@@ -24,6 +24,7 @@ If `EVENTS_CHANNEL_ID` is configured, the booking is also posted to a Slack chan
 
 - **`/stats`** — see your own membership info plus a lab-wide snapshot. Shows when you joined, your tenure and rank (*Nth* longest-active member), your tier, your lifetime contribution, plus active member count, tier split, joiners/leavers in the last 30 days, and the lab's opening anniversary. Ephemeral reply (only you see it).
 - **`/played`** — single line: `Total time as a member: X years, Y days, Z hours, A minutes, B seconds (joined on [date] at [HH:MM:SS])`. Ephemeral reply.
+- **`/members`** — list of all active members (Stripe + Nexudus, deduplicated by email, oldest joiner first). Members visible to Slack are shown as `@mentions`; the count of members not on Slack is shown at the bottom. Ephemeral reply, members-only.
 
 ### "Members only" — what's that about?
 
