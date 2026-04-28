@@ -11,6 +11,10 @@ compatibility_date = "2025-01-01"
 #   ROOMS_JSON                    — JSON array of { name, email, capacity } room records
 #   STRIPE_SECRET_KEY             — restricted Stripe key (rk_live_... or rk_test_...) with read on Customers + Subscriptions
 #   STRIPE_MEMBERSHIP_PRICE_IDS   — comma-separated Stripe Price IDs that count as membership
+#   NEXUDUS_EMAIL                 — Nexudus admin user email (dedicated API user; source of truth for membership)
+#   NEXUDUS_PASSWORD              — password for the Nexudus API user (HTTP Basic auth; rotate via the admin UI)
+#   NEXUDUS_BUSINESS_ID           — Farset Labs invoicing-business id in Nexudus (used to scope coworker queries)
+#   NEXUDUS_PORTAL_URL            — Nexudus member self-service portal URL (e.g. https://farsetlabs.spaces.nexudus.com/)
 #   MEMBERSHIP_SIGNUP_URL         — link non-members are pointed to (e.g. https://www.farsetlabs.org.uk/)
 #   STRIPE_BILLING_PORTAL_URL     — Stripe customer portal login link for self-service email/payment updates
 #   DOOR_CODE                     — current Farset Labs door code, surfaced via /door-code to members

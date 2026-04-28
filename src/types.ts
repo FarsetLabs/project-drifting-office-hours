@@ -7,6 +7,10 @@ export interface Env {
   ROOMS_JSON: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_MEMBERSHIP_PRICE_IDS: string;
+  NEXUDUS_EMAIL: string;
+  NEXUDUS_PASSWORD: string;
+  NEXUDUS_BUSINESS_ID: string;
+  NEXUDUS_PORTAL_URL: string;
   MEMBERSHIP_SIGNUP_URL: string;
   STRIPE_BILLING_PORTAL_URL: string;
   DOOR_CODE: string;

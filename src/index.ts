@@ -13,11 +13,12 @@ import {
   verifySlackSignature,
 } from "./slack";
 import {
-  findActiveMembership,
+  findActiveMembership as findActiveStripeMembership,
   getLabStats,
   getLifetimeContributionPence,
   getProductNames,
 } from "./stripe";
+import { findActiveMembership as findActiveNexudusMembership } from "./nexudus";
 
 const FARSET_LABS_OPENED_AT = "2012-04-06";
 const TIER_ORDER = ["Standard", "Professional", "Professional + Desk", "Casual"];
@@ -381,13 +382,11 @@ async function checkMembership(
           ":lock: We couldn't read your Slack email. Make sure your Slack profile has an email set, or ask another member to help.",
       };
     }
-    const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const { active, memberSince } = await findActiveMembership(
-      env.STRIPE_SECRET_KEY,
+    const { active, memberSince } = await findActiveNexudusMembership(
+      env.NEXUDUS_EMAIL,
+      env.NEXUDUS_PASSWORD,
+      env.NEXUDUS_BUSINESS_ID,
       email.toLowerCase(),
-      priceIds,
     );
     if (active) {
       const duration = memberSince ? humanizeDuration(memberSince) : null;
@@ -407,7 +406,7 @@ async function checkMembership(
         `:lock: *Members only* — no active Farset Labs membership found for *${email}*.\n\n` +
         `*How to fix*\n` +
         `• Not a member yet? <${env.MEMBERSHIP_SIGNUP_URL}|Join Farset Labs>.\n` +
-        `• Pay under a different email? <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>, or change your Slack profile email to match.\n\n` +
+        `• Member under a different email? <${env.NEXUDUS_PORTAL_URL}|Update it in your Nexudus member portal>, or change your Slack profile email to match.\n\n` +
         `_(In a pinch, ask a member to book on your behalf — but please try to do one of the above.)_`,
     };
   } catch (err) {
@@ -529,7 +528,7 @@ async function computeAndSendStats(
       .map((s) => s.trim())
       .filter(Boolean);
     const productNames = await getProductNames(env.STRIPE_SECRET_KEY);
-    const membership = await findActiveMembership(
+    const membership = await findActiveStripeMembership(
       env.STRIPE_SECRET_KEY,
       email.toLowerCase(),
       priceIds,
