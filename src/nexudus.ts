@@ -63,6 +63,7 @@ export async function findActiveMembership(
 export interface ActiveMember {
   email: string;
   memberSince: number;
+  tariffName?: string;
 }
 
 export async function listActiveMembers(
@@ -94,6 +95,7 @@ export async function listActiveMembers(
       out.push({
         email: r.Email.toLowerCase(),
         memberSince: Math.floor(new Date(r.RegistrationDate).getTime() / 1000),
+        tariffName: r.TariffName ?? undefined,
       });
     }
     if (!res.HasNextPage || res.Records.length === 0) break;

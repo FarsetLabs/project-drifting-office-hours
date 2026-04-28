@@ -103,91 +103,6 @@ export async function findActiveMembership(
   return { active: activeFound, memberSince: earliestStart, customerIds, tier };
 }
 
-export interface LabStats {
-  total: number;
-  olderThanUser: number;
-  tierBreakdown: Record<string, number>;
-  joinedLast30: number;
-  leftLast30: number;
-}
-
-export async function getLabStats(
-  apiKey: string,
-  priceIds: string[],
-  userStartDate: number,
-  productNames?: Map<string, string>,
-): Promise<LabStats> {
-  const priceSet = new Set(priceIds);
-  const now = Math.floor(Date.now() / 1000);
-  const cutoff30 = now - 30 * 86400;
-
-  const activeCustomers = new Set<string>();
-  const customerEarliestStart = new Map<string, number>();
-  const tierBreakdown: Record<string, number> = {};
-  let total = 0;
-  let olderThanUser = 0;
-
-  let startingAfter: string | undefined;
-  for (let page = 0; page < 30; page++) {
-    const url = new URL("https://api.stripe.com/v1/subscriptions");
-    url.searchParams.set("status", "active");
-    url.searchParams.set("limit", "100");
-    if (startingAfter) url.searchParams.set("starting_after", startingAfter);
-
-    const res = await stripeFetch<StripeSubscriptionList>(apiKey, url.toString());
-    for (const sub of res.data) {
-      const matchingItem = sub.items.data.find((item) => priceSet.has(item.price.id));
-      if (!matchingItem) continue;
-      total++;
-      activeCustomers.add(sub.customer);
-      const prev = customerEarliestStart.get(sub.customer);
-      if (prev === undefined || sub.start_date < prev) {
-        customerEarliestStart.set(sub.customer, sub.start_date);
-      }
-      if (sub.start_date < userStartDate) olderThanUser++;
-      const productName = resolveProductName(matchingItem.price.product, productNames);
-      tierBreakdown[productName] = (tierBreakdown[productName] ?? 0) + 1;
-    }
-    if (!res.has_more || res.data.length === 0) break;
-    startingAfter = res.data[res.data.length - 1].id;
-  }
-
-  let joinedLast30 = 0;
-  for (const start of customerEarliestStart.values()) {
-    if (start >= cutoff30) joinedLast30++;
-  }
-
-  const realLeavers = new Set<string>();
-  let eventStartingAfter: string | undefined;
-  for (let page = 0; page < 5; page++) {
-    const url = new URL("https://api.stripe.com/v1/events");
-    url.searchParams.set("type", "customer.subscription.deleted");
-    url.searchParams.set("limit", "100");
-    url.searchParams.set("created[gte]", String(cutoff30));
-    if (eventStartingAfter) url.searchParams.set("starting_after", eventStartingAfter);
-
-    const res = await stripeFetch<StripeEventList>(apiKey, url.toString());
-    for (const event of res.data) {
-      const sub = event.data.object;
-      const matchingItem = sub.items.data.find((item) => priceSet.has(item.price.id));
-      if (!matchingItem) continue;
-      if (!activeCustomers.has(sub.customer)) {
-        realLeavers.add(sub.customer);
-      }
-    }
-    if (!res.has_more || res.data.length === 0) break;
-    eventStartingAfter = res.data[res.data.length - 1].id;
-  }
-
-  return {
-    total,
-    olderThanUser,
-    tierBreakdown,
-    joinedLast30,
-    leftLast30: realLeavers.size,
-  };
-}
-
 export async function getLifetimeContributionPence(
   apiKey: string,
   customerIds: string[],
@@ -216,6 +131,7 @@ export async function getLifetimeContributionPence(
 export interface StripeActiveMember {
   email: string;
   memberSince: number;
+  tierName?: string;
 }
 
 interface StripeSubscriptionListExpanded {
@@ -230,9 +146,10 @@ interface StripeSubscriptionListExpanded {
 export async function listActiveMembers(
   apiKey: string,
   priceIds: string[],
+  productNames?: Map<string, string>,
 ): Promise<StripeActiveMember[]> {
   const priceSet = new Set(priceIds);
-  const earliestByEmail = new Map<string, number>();
+  const byEmail = new Map<string, StripeActiveMember>();
   let startingAfter: string | undefined;
   for (let page = 0; page < 30; page++) {
     const url = new URL("https://api.stripe.com/v1/subscriptions");
@@ -248,19 +165,64 @@ export async function listActiveMembers(
       const customer = sub.customer;
       const email = typeof customer === "object" ? customer.email?.toLowerCase() : null;
       if (!email) continue;
-      const prev = earliestByEmail.get(email);
-      if (prev === undefined || sub.start_date < prev) {
-        earliestByEmail.set(email, sub.start_date);
+      const tierName = resolveProductName(matchingItem.price.product, productNames);
+      const prev = byEmail.get(email);
+      if (prev === undefined || sub.start_date < prev.memberSince) {
+        byEmail.set(email, { email, memberSince: sub.start_date, tierName });
       }
     }
     if (!res.has_more || res.data.length === 0) break;
     const last = res.data[res.data.length - 1];
     startingAfter = last.id;
   }
-  return Array.from(earliestByEmail.entries()).map(([email, memberSince]) => ({
-    email,
-    memberSince,
-  }));
+  return Array.from(byEmail.values());
+}
+
+export async function getRecentStripeLeavers(
+  apiKey: string,
+  priceIds: string[],
+): Promise<number> {
+  const priceSet = new Set(priceIds);
+  const cutoff30 = Math.floor(Date.now() / 1000) - 30 * 86400;
+
+  const activeCustomers = new Set<string>();
+  let activeStartingAfter: string | undefined;
+  for (let page = 0; page < 30; page++) {
+    const url = new URL("https://api.stripe.com/v1/subscriptions");
+    url.searchParams.set("status", "active");
+    url.searchParams.set("limit", "100");
+    if (activeStartingAfter) url.searchParams.set("starting_after", activeStartingAfter);
+    const res = await stripeFetch<StripeSubscriptionList>(apiKey, url.toString());
+    for (const sub of res.data) {
+      const matchingItem = sub.items.data.find((item) => priceSet.has(item.price.id));
+      if (!matchingItem) continue;
+      activeCustomers.add(sub.customer);
+    }
+    if (!res.has_more || res.data.length === 0) break;
+    activeStartingAfter = res.data[res.data.length - 1].id;
+  }
+
+  const realLeavers = new Set<string>();
+  let eventStartingAfter: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const url = new URL("https://api.stripe.com/v1/events");
+    url.searchParams.set("type", "customer.subscription.deleted");
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("created[gte]", String(cutoff30));
+    if (eventStartingAfter) url.searchParams.set("starting_after", eventStartingAfter);
+    const res = await stripeFetch<StripeEventList>(apiKey, url.toString());
+    for (const event of res.data) {
+      const sub = event.data.object;
+      const matchingItem = sub.items.data.find((item) => priceSet.has(item.price.id));
+      if (!matchingItem) continue;
+      if (!activeCustomers.has(sub.customer)) {
+        realLeavers.add(sub.customer);
+      }
+    }
+    if (!res.has_more || res.data.length === 0) break;
+    eventStartingAfter = res.data[res.data.length - 1].id;
+  }
+  return realLeavers.size;
 }
 
 export async function getProductNames(apiKey: string): Promise<Map<string, string>> {
