@@ -3,7 +3,7 @@ import type { Room } from "./types";
 const FIVE_MINUTES = 5 * 60;
 
 export const TINKER_LINK =
-  ":wrench: Want to change how this works? <https://github.com/FarsetLabs/project-drifting-office-hours|Edit on GitHub>.";
+  ":wrench: Want to change how this works? <https://github.com/FarsetLabs/project-drifting-office-hours|Edit on GitHub>. Built by members.";
 
 /**
  * Escape user-supplied text before embedding it in a Slack mrkdwn block.
@@ -17,7 +17,7 @@ export function escapeMrkdwn(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function tinkerContextBlock(suffix?: string): object {
+export function tinkerContextBlock(suffix?: string): object {
   const text = suffix ? `${TINKER_LINK}\n${suffix}` : TINKER_LINK;
   return {
     type: "context",

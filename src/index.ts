@@ -8,6 +8,7 @@ import {
   postChannelMessage,
   postDM,
   postToResponseUrl,
+  tinkerContextBlock,
   TINKER_LINK,
   verifySlackSignature,
 } from "./slack";
@@ -67,6 +68,36 @@ async function handleSlashCommand(
     ctx.waitUntil(
       computeAndSendStats(env, userId, userName, responseUrl).catch((err) =>
         console.error("Stats handler failed:", err),
+      ),
+    );
+    return new Response("", { status: 200 });
+  }
+
+  if (command === "/door-code") {
+    if (!userId || !responseUrl) {
+      return new Response("Missing user_id or response_url", { status: 400 });
+    }
+    if (!responseUrl.startsWith("https://hooks.slack.com/")) {
+      return new Response("Invalid response_url", { status: 400 });
+    }
+    ctx.waitUntil(
+      sendDoorCode(env, userId, responseUrl).catch((err) =>
+        console.error("Door code handler failed:", err),
+      ),
+    );
+    return new Response("", { status: 200 });
+  }
+
+  if (command === "/wifi-password") {
+    if (!userId || !responseUrl) {
+      return new Response("Missing user_id or response_url", { status: 400 });
+    }
+    if (!responseUrl.startsWith("https://hooks.slack.com/")) {
+      return new Response("Invalid response_url", { status: 400 });
+    }
+    ctx.waitUntil(
+      sendWifi(env, userId, responseUrl).catch((err) =>
+        console.error("Wifi handler failed:", err),
       ),
     );
     return new Response("", { status: 200 });
@@ -411,6 +442,68 @@ function formatBusyRange(startISO: string, endISO: string): string {
     return `${startDate}, ${startTime}–${endTime}`;
   }
   return `${startDate}, ${startTime} – ${endDate}, ${endTime}`;
+}
+
+async function sendDoorCode(
+  env: Env,
+  slackUserId: string,
+  responseUrl: string,
+): Promise<void> {
+  const gate = await checkMembership(env, slackUserId);
+  if (!gate.allowed) {
+    await postToResponseUrl(responseUrl, {
+      response_type: "ephemeral",
+      text: gate.message,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: gate.message } },
+        tinkerContextBlock(),
+      ],
+    });
+    return;
+  }
+  const body =
+    `:key: Current Farset Labs door code: *${env.DOOR_CODE}*\n` +
+    `_Members only — please don't share outside the membership._\n\n` +
+    `:night_with_stars: *If the business park gates are closed at night*, ring security on the telecom at the pedestrian entrance to get in or out. They'll ask for a password — it's *${env.BUSINESS_PARK_GATES_PASSWORD}*.`;
+  await postToResponseUrl(responseUrl, {
+    response_type: "ephemeral",
+    text: body,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: body } },
+      tinkerContextBlock(),
+    ],
+  });
+}
+
+async function sendWifi(
+  env: Env,
+  slackUserId: string,
+  responseUrl: string,
+): Promise<void> {
+  const guestBlock =
+    `*Guest Wi-Fi* (share with friends and visitors)\n` +
+    `• Network: \`${env.WIFI_GUEST_SSID}\`\n` +
+    `• Password: \`${env.WIFI_GUEST_PASSWORD}\``;
+
+  const gate = await checkMembership(env, slackUserId);
+  const body = gate.allowed
+    ? `:signal_strength: Farset Labs Wi-Fi\n\n` +
+      `*Members Wi-Fi* (don't share)\n` +
+      `• Network: \`${env.WIFI_MEMBER_SSID}\`\n` +
+      `• Password: \`${env.WIFI_MEMBER_PASSWORD}\`\n\n` +
+      `${guestBlock}`
+    : `:signal_strength: Farset Labs Wi-Fi\n\n` +
+      `${guestBlock}\n\n` +
+      `_Members get the members-only network too — ${gate.message}_`;
+
+  await postToResponseUrl(responseUrl, {
+    response_type: "ephemeral",
+    text: body,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: body } },
+      tinkerContextBlock(),
+    ],
+  });
 }
 
 async function computeAndSendStats(

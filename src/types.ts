@@ -9,6 +9,12 @@ export interface Env {
   STRIPE_MEMBERSHIP_PRICE_IDS: string;
   MEMBERSHIP_SIGNUP_URL: string;
   STRIPE_BILLING_PORTAL_URL: string;
+  DOOR_CODE: string;
+  BUSINESS_PARK_GATES_PASSWORD: string;
+  WIFI_MEMBER_SSID: string;
+  WIFI_MEMBER_PASSWORD: string;
+  WIFI_GUEST_SSID: string;
+  WIFI_GUEST_PASSWORD: string;
   EVENTS_CHANNEL_ID?: string;
 }
 
