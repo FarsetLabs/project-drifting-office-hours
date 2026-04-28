@@ -22,22 +22,23 @@ If `EVENTS_CHANNEL_ID` is configured, the booking is also posted to a Slack chan
 
 ### Other commands
 
-- **`/stats`** — see your own membership info plus a lab-wide snapshot. Shows when you joined, your tenure and rank (*Nth* longest-active member), your tier, your lifetime contribution, plus active member count, tier split, joiners/leavers in the last 30 days, and the lab's opening anniversary. Ephemeral reply (only you see it).
+- **`/stats`** — see your own membership info plus a lab-wide snapshot. Shows when you joined, your tenure and rank (*Nth* longest-active member), your tier, your lifetime contribution via Stripe, plus active member count (Stripe + Nexudus, deduplicated), tier split, joiners in the last 30 days, Stripe leavers in the last 30 days, and the lab's opening anniversary. Ephemeral reply (only you see it).
 - **`/played`** — single line: `Total time as a member: X years, Y days, Z hours, A minutes, B seconds (joined on [date] at [HH:MM:SS])`. Ephemeral reply.
+- **`/members`** — list of all active members (Stripe + Nexudus, deduplicated by email, newest joiner first). Members visible to Slack are shown as `@mentions`; the count of members not on Slack is shown at the bottom. Ephemeral reply, members-only.
 
 ### "Members only" — what's that about?
 
-The bot only accepts bookings from people with an active Stripe membership. When you run `/create-an-event`, it:
+The bot only accepts bookings from people with an active Farset Labs membership in Nexudus. When you run `/create-an-event`, it:
 
 1. Reads your Slack profile email.
-2. Asks Stripe whether that email has an active membership subscription.
+2. Asks Nexudus whether that email has an active coworker record with an assigned tariff (membership plan).
 3. If yes → opens the form (with a wee greeting telling you how long you've been a member).
 4. If no → tells you politely, with two ways to resolve.
 
 The two resolutions, in order of preference:
 
 - **You're not yet a member?** [Join Farset Labs](https://www.farsetlabs.org.uk/).
-- **Your Stripe email differs from your Slack email?** Either update Stripe's email via the customer portal (link is in the bot's reply), or update your Slack profile email to match what's on Stripe.
+- **Your Nexudus email differs from your Slack email?** Either update your email in the Nexudus member portal (link is in the bot's reply), or update your Slack profile email to match what's on Nexudus.
 
 In a pinch a fellow member can book on your behalf, but please try the above first — bot accountability gets fuzzy when bookings don't match the actual person using the room.
 
@@ -58,7 +59,8 @@ The whole thing is one Cloudflare Worker plus four external services. Each piece
 - **Slack app** — the user-facing chat UI. Owns the slash command and the modal. Configured at [api.slack.com/apps](https://api.slack.com/apps). Sends webhooks to the Worker when someone runs the command or submits the form.
 - **Cloudflare Worker** — the brains. Receives Slack webhooks, talks to Stripe and Google, replies to Slack. Runs on Cloudflare's free tier. Configured at [dash.cloudflare.com](https://dash.cloudflare.com).
 - **Google Workspace + Calendar** — where the actual events get created. Rooms are configured as Workspace **resources** (admin.google.com → Buildings and resources). The Worker uses a **service account** with **Domain-Wide Delegation** to act as a Workspace user (`services@farsetlabs.org.uk`) — that's what gives it permission to attach rooms to events.
-- **Stripe** — source of truth for "is this person a member?". The Worker uses a read-only restricted API key.
+- **Nexudus** — source of truth for "is this person a member?". The Worker authenticates as a dedicated admin API user (HTTP Basic auth) and reads coworker records.
+- **Stripe** — used by `/stats` for lifetime contribution figures and the leavers-in-the-last-30-days count, and as a *secondary* membership source merged with Nexudus (so anyone with an active Stripe sub but no Nexudus record still counts). The Worker uses a read-only restricted API key.
 - **GitHub** — where this code lives. Pushing to `main` auto-deploys via GitHub Actions. PRs welcome.
 
 ### How to get access to the pieces
@@ -70,6 +72,7 @@ The whole thing is one Cloudflare Worker plus four external services. Each piece
 | **Slack app config** | Ask a Workspace admin to add you as a "collaborator" on the app at api.slack.com/apps. |
 | **Google Workspace admin** | Ask a director. Most maintenance doesn't need it. |
 | **Stripe dashboard** | Ask a director. Most maintenance doesn't need it (the Worker uses a restricted API key, not a personal Stripe login). |
+| **Nexudus admin** | Ask a director. The Worker authenticates as a dedicated API user — most maintenance doesn't need a personal Nexudus admin login. |
 
 If you're not sure who a director is, see the Farset Labs website or ask in Slack.
 
@@ -103,6 +106,9 @@ These are sensitive — leaking them could let someone impersonate the bot, read
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | The full JSON private key for the service account that books events. **Treat like a password.** | console.cloud.google.com → IAM & Admin → Service Accounts → click the bot account → Keys → Create new key (JSON). Pipe the file into `wrangler secret put` — don't paste it. **Ask a director with GCP access.** |
 | `STRIPE_SECRET_KEY` | Read-only Stripe API key for the membership check, `/stats` lookups, and lifetime contribution sums. | dashboard.stripe.com → Developers → API keys → Restricted keys → Create. Permissions, all **Read** only: **Customers**, **Customer search** (if shown separately), **Subscriptions**, **Products**, **Events**, **Invoices**. Nothing else. The bot never writes. **Ask a director with Stripe access.** |
 | `STRIPE_MEMBERSHIP_PRICE_IDS` | Comma-separated list of Stripe Price IDs that count as a membership. | dashboard.stripe.com → Product catalog → click each membership product → copy each Price ID. **Director can pull these in two minutes.** |
+| `NEXUDUS_EMAIL` / `NEXUDUS_PASSWORD` | Credentials for a dedicated Nexudus admin API user (HTTP Basic auth — Nexudus has no API-key concept). The user must have a role granting read access to coworkers and contracts. **Don't reuse a personal admin login.** | Nexudus admin → Settings → Team → Add team member. Give it a long random password, assign a read-only role. **Ask a director with Nexudus admin access.** First login of a new team member can be flaky — see the activation-email gotcha below. |
+| `NEXUDUS_BUSINESS_ID` | Nexudus invoicing-business id (numeric) used to scope coworker queries to Farset Labs Hackerspace. | The id appears in the Nexudus admin URL when you filter to the Farset Labs business in operations → coworkers (look for `coworker_InvoicingBusiness=…` in the URL). |
+| `NEXUDUS_PORTAL_URL` | Nexudus member self-service portal URL surfaced when a non-matching email comes through. | Farset Labs uses `https://farsetlabs.spaces.nexudus.com/`. Each Nexudus space has its own subdomain — confirm the lab is still using this one before changing. |
 
 If you're rotating one of the sensitive secrets (because someone left, or it leaked), you also need to invalidate the old one — revoke the Stripe key, regenerate the service-account key, etc. **Ask a director to help; this is the kind of thing where small mistakes have big consequences.**
 
@@ -146,7 +152,7 @@ Slack workspace (Farset Labs)
   ├─ /create-an-event ──► POST /slack/commands
   │                          │
   │                          ├─ verify Slack signature
-  │                          ├─ ask Stripe: "is this email a member?"
+  │                          ├─ ask Nexudus: "is this email a member?" (active coworker w/ tariff)
   │                          │     ├─ no  → ephemeral "members only" reply
   │                          │     └─ yes → open booking modal
   │                          └─ done
@@ -157,9 +163,14 @@ Slack workspace (Farset Labs)
   │                          ├─ ack with empty 200 (async work follows)
   │                          └─ in waitUntil:
   │                                ├─ Slack: get user's email
-  │                                ├─ Stripe: products + active membership
-  │                                ├─ Stripe: lab stats (active subs walk + leavers events) ‖
-  │                                │   Stripe: lifetime invoices
+  │                                ├─ in parallel:
+  │                                │     Stripe: list active members (with tier names)
+  │                                │     Nexudus: list active coworkers (with tariff names)
+  │                                │     Stripe: customer search for the requesting user (for contribution)
+  │                                ├─ merge by email (earliest memberSince wins, Nexudus tier preferred)
+  │                                ├─ in parallel:
+  │                                │     Stripe: leavers-in-last-30 events walk
+  │                                │     Stripe: lifetime invoices for the user (skipped if no Stripe customer)
   │                                └─ POST to response_url with rendered ephemeral
   │
   └─ Modal submit ──► POST /slack/interactions
@@ -179,7 +190,8 @@ src/
 ├── index.ts     # Worker entrypoint — routes /health, /slack/commands, /slack/interactions, glue logic
 ├── google.ts    # Service-account JWT + DWD, room events listing, event creation
 ├── slack.ts     # Signature verification, modal builders, users.info, DM + channel posting
-├── stripe.ts    # Membership lookup, lab stats walk (active subs + leaver events), lifetime invoice sum, product-name map
+├── nexudus.ts   # Membership lookup + active-coworker list (source of truth for "is this person a member?")
+├── stripe.ts    # Active-member list, leavers-events walk, lifetime invoice sum, product-name map, customer search (used by /stats)
 └── types.ts     # Env, Room, SlackBlockValue, etc.
 ```
 
@@ -208,6 +220,7 @@ A non-exhaustive list of "would be nice if someone built this" — pick whatever
 - **`/cancel-booking`** — cancel one of your bookings without leaving Slack.
 - **Public-vs-private booking distinction** — currently every booking ends up on the public Events calendar; not every meeting needs that.
 - **Cache the membership check** — Stripe gets pinged every time someone runs the command. Workers KV could cache for an hour per user.
+- **Finish the Nexudus migration** — the gate and `/stats` now both pull membership from a Stripe + Nexudus merge (Nexudus preferred for tier names, earliest start date wins). What's still Stripe-only on `/stats`: lifetime contribution (sums Stripe invoices) and the leavers-in-the-last-30-days count (uses `customer.subscription.deleted` events). To complete the migration: port the contribution sum to Nexudus invoices via `/api/billing/coworkerinvoices`, and figure out the cancelled-coworker filter on Nexudus to derive leavers from there too. Once done, `src/stripe.ts` and the `STRIPE_*` secrets can be deleted.
 - **Repeat-this-booking helper** — DM button after a successful booking that pre-fills the modal for next week.
 - **Room descriptions in the dropdown** — extend `ROOMS_JSON` with a `description` field so newcomers know what each room is good for.
 - **Trustee/external-visitor override** — allowlist of Slack IDs that can bypass the Stripe gate to book for visiting groups.
@@ -236,3 +249,4 @@ A non-exhaustive list of "would be nice if someone built this" — pick whatever
 - **Stripe error redaction** — when a Stripe call fails, the response body is logged with any `rk_/sk_/pk_*_…` key suffixes redacted before reaching `wrangler tail`.
 - **Token caching** — Google service-account JWTs are cached in-memory per Worker isolate.
 - **No caching on Stripe** — each `/create-an-event` and `/stats` invocation hits Stripe. Fine at hackerspace scale.
+- **Cloudflare 50-subrequest limit** — Workers on the free plan cap each invocation at 50 outgoing `fetch()` calls (paid: 1000). Current commands stay well under: gate paths use 3, `/members` uses 6, `/stats` lands around 10–15 in realistic scenarios. The two patterns to watch are (a) per-member fan-out — `/members` originally did 50× `users.lookupByEmail` and had to switch to a single `users.list` walk to stay safe, and (b) Stripe-customer fan-out — `getLifetimeContributionPence` paginates invoices per matched Stripe customer, so a user with many duplicate Stripe customer records can stack up. If you add a new command, count the calls.

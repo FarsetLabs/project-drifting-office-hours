@@ -146,6 +146,45 @@ export async function getUserEmail(
   return data.user?.profile?.email ?? null;
 }
 
+export async function listWorkspaceEmailToId(
+  botToken: string,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  let cursor: string | undefined;
+  for (let safety = 0; safety < 10; safety++) {
+    const url = new URL("https://slack.com/api/users.list");
+    url.searchParams.set("limit", "1000");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${botToken}` },
+    });
+    const data = (await res.json()) as {
+      ok: boolean;
+      error?: string;
+      members?: Array<{
+        id: string;
+        deleted?: boolean;
+        is_bot?: boolean;
+        profile?: { email?: string };
+      }>;
+      response_metadata?: { next_cursor?: string };
+    };
+    if (!data.ok || !data.members) {
+      console.error("users.list failed:", data.error);
+      break;
+    }
+    for (const m of data.members) {
+      if (m.deleted || m.is_bot) continue;
+      const email = m.profile?.email?.toLowerCase();
+      if (!email) continue;
+      map.set(email, m.id);
+    }
+    cursor = data.response_metadata?.next_cursor;
+    if (!cursor) break;
+  }
+  return map;
+}
+
 export function buildErrorModal(message: string): object {
   return {
     type: "modal",

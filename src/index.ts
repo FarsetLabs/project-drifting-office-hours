@@ -4,6 +4,7 @@ import {
   buildErrorModal,
   escapeMrkdwn,
   getUserEmail,
+  listWorkspaceEmailToId,
   openModal,
   postChannelMessage,
   postDM,
@@ -13,11 +14,16 @@ import {
   verifySlackSignature,
 } from "./slack";
 import {
-  findActiveMembership,
-  getLabStats,
+  findActiveMembership as findActiveStripeMembership,
   getLifetimeContributionPence,
   getProductNames,
+  getRecentStripeLeavers,
+  listActiveMembers as listActiveStripeMembers,
 } from "./stripe";
+import {
+  findActiveMembership as findActiveNexudusMembership,
+  listActiveMembers as listActiveNexudusMembers,
+} from "./nexudus";
 
 const FARSET_LABS_OPENED_AT = "2012-04-06";
 const TIER_ORDER = ["Standard", "Professional", "Professional + Desk", "Casual"];
@@ -84,6 +90,21 @@ async function handleSlashCommand(
     ctx.waitUntil(
       sendDoorCode(env, userId, responseUrl).catch((err) =>
         console.error("Door code handler failed:", err),
+      ),
+    );
+    return new Response("", { status: 200 });
+  }
+
+  if (command === "/members") {
+    if (!userId || !responseUrl) {
+      return new Response("Missing user_id or response_url", { status: 400 });
+    }
+    if (!responseUrl.startsWith("https://hooks.slack.com/")) {
+      return new Response("Invalid response_url", { status: 400 });
+    }
+    ctx.waitUntil(
+      sendMembersList(env, userId, responseUrl).catch((err) =>
+        console.error("Members handler failed:", err),
       ),
     );
     return new Response("", { status: 200 });
@@ -381,13 +402,11 @@ async function checkMembership(
           ":lock: We couldn't read your Slack email. Make sure your Slack profile has an email set, or ask another member to help.",
       };
     }
-    const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const { active, memberSince } = await findActiveMembership(
-      env.STRIPE_SECRET_KEY,
+    const { active, memberSince } = await findActiveNexudusMembership(
+      env.NEXUDUS_EMAIL,
+      env.NEXUDUS_PASSWORD,
+      env.NEXUDUS_BUSINESS_ID,
       email.toLowerCase(),
-      priceIds,
     );
     if (active) {
       const duration = memberSince ? humanizeDuration(memberSince) : null;
@@ -407,7 +426,7 @@ async function checkMembership(
         `:lock: *Members only* — no active Farset Labs membership found for *${email}*.\n\n` +
         `*How to fix*\n` +
         `• Not a member yet? <${env.MEMBERSHIP_SIGNUP_URL}|Join Farset Labs>.\n` +
-        `• Pay under a different email? <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>, or change your Slack profile email to match.\n\n` +
+        `• Member under a different email? <${env.NEXUDUS_PORTAL_URL}|Update it in your Nexudus member portal>, or change your Slack profile email to match.\n\n` +
         `_(In a pinch, ask a member to book on your behalf — but please try to do one of the above.)_`,
     };
   } catch (err) {
@@ -476,6 +495,73 @@ async function sendDoorCode(
   });
 }
 
+async function sendMembersList(
+  env: Env,
+  slackUserId: string,
+  responseUrl: string,
+): Promise<void> {
+  const gate = await checkMembership(env, slackUserId);
+  if (!gate.allowed) {
+    await postToResponseUrl(responseUrl, {
+      response_type: "ephemeral",
+      text: gate.message,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: gate.message } },
+        tinkerContextBlock(),
+      ],
+    });
+    return;
+  }
+
+  const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const [stripeList, nexudusList, slackEmailToId] = await Promise.all([
+    listActiveStripeMembers(env.STRIPE_SECRET_KEY, priceIds),
+    listActiveNexudusMembers(
+      env.NEXUDUS_EMAIL,
+      env.NEXUDUS_PASSWORD,
+      env.NEXUDUS_BUSINESS_ID,
+    ),
+    listWorkspaceEmailToId(env.SLACK_BOT_TOKEN),
+  ]);
+
+  const earliestByEmail = new Map<string, number>();
+  for (const m of [...stripeList, ...nexudusList]) {
+    const prev = earliestByEmail.get(m.email);
+    if (prev === undefined || m.memberSince < prev) {
+      earliestByEmail.set(m.email, m.memberSince);
+    }
+  }
+
+  const inSlack: Array<{ id: string; memberSince: number }> = [];
+  for (const [email, memberSince] of earliestByEmail) {
+    const id = slackEmailToId.get(email);
+    if (id) inSlack.push({ id, memberSince });
+  }
+  inSlack.sort((a, b) => b.memberSince - a.memberSince);
+
+  const totalCounted = earliestByEmail.size;
+  const memberLines = inSlack.map(
+    (m) => `<@${m.id}> — member since ${formatOrdinalDate(m.memberSince)}`,
+  );
+  const lines = [
+    `*:farsetlabs: Farset Labs Hackerspace Members*`,
+    `${totalCounted} active members — ${inSlack.length} on Slack:`,
+    "",
+    ...memberLines,
+  ];
+
+  await postToResponseUrl(responseUrl, {
+    response_type: "ephemeral",
+    text: `${inSlack.length} active Farset Labs members on Slack.`,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
+      tinkerContextBlock(),
+    ],
+  });
+}
+
 async function sendWifi(
   env: Env,
   slackUserId: string,
@@ -525,18 +611,39 @@ async function computeAndSendStats(
       return;
     }
 
+    const lower = email.toLowerCase();
     const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
       .map((s) => s.trim())
       .filter(Boolean);
     const productNames = await getProductNames(env.STRIPE_SECRET_KEY);
-    const membership = await findActiveMembership(
-      env.STRIPE_SECRET_KEY,
-      email.toLowerCase(),
-      priceIds,
-      productNames,
-    );
 
-    if (!membership.active || !membership.memberSince || !membership.tier) {
+    const [stripeList, nexudusList, stripePersonal] = await Promise.all([
+      listActiveStripeMembers(env.STRIPE_SECRET_KEY, priceIds, productNames),
+      listActiveNexudusMembers(
+        env.NEXUDUS_EMAIL,
+        env.NEXUDUS_PASSWORD,
+        env.NEXUDUS_BUSINESS_ID,
+      ),
+      findActiveStripeMembership(env.STRIPE_SECRET_KEY, lower, priceIds, productNames),
+    ]);
+
+    type MergedMember = { memberSince: number; tierName?: string };
+    const merged = new Map<string, MergedMember>();
+    for (const s of stripeList) {
+      merged.set(s.email, { memberSince: s.memberSince, tierName: s.tierName });
+    }
+    for (const n of nexudusList) {
+      const prev = merged.get(n.email);
+      if (prev) {
+        if (n.memberSince < prev.memberSince) prev.memberSince = n.memberSince;
+        if (n.tariffName) prev.tierName = n.tariffName;
+      } else {
+        merged.set(n.email, { memberSince: n.memberSince, tierName: n.tariffName });
+      }
+    }
+
+    const me = merged.get(lower);
+    if (!me) {
       await postToResponseUrl(responseUrl, {
         response_type: "ephemeral",
         text: `No active Farset Labs membership found for ${email}.`,
@@ -548,7 +655,7 @@ async function computeAndSendStats(
               text:
                 `:bar_chart: No active Farset Labs membership found for *${email}*.\n\n` +
                 `• Not a member yet? <${env.MEMBERSHIP_SIGNUP_URL}|Join Farset Labs>.\n` +
-                `• Pay under a different email? <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>, or change your Slack profile email to match.`,
+                `• Member under a different email? <${env.NEXUDUS_PORTAL_URL}|Update it in your Nexudus member portal>, or change your Slack profile email to match.`,
             },
           },
           {
@@ -563,38 +670,48 @@ async function computeAndSendStats(
     let lines: string[];
     if (personalOnly) {
       lines = [
-        `Total time as a member: ${preciseDuration(membership.memberSince)} (joined on ${formatOrdinalDateTime(membership.memberSince)})`,
+        `Total time as a member: ${preciseDuration(me.memberSince)} (joined on ${formatOrdinalDateTime(me.memberSince)})`,
       ];
     } else {
-      const [labStats, contributionPence] = await Promise.all([
-        getLabStats(
-          env.STRIPE_SECRET_KEY,
-          priceIds,
-          membership.memberSince,
-          productNames,
-        ),
-        getLifetimeContributionPence(env.STRIPE_SECRET_KEY, membership.customerIds),
+      const cutoff30 = Math.floor(Date.now() / 1000) - 30 * 86400;
+      let olderThanUser = 0;
+      let joinedLast30 = 0;
+      const tierBreakdown: Record<string, number> = {};
+      for (const m of merged.values()) {
+        if (m.memberSince < me.memberSince) olderThanUser += 1;
+        if (m.memberSince >= cutoff30) joinedLast30 += 1;
+        const tierKey = m.tierName ?? "Membership";
+        tierBreakdown[tierKey] = (tierBreakdown[tierKey] ?? 0) + 1;
+      }
+
+      const [leftLast30, contributionPence] = await Promise.all([
+        getRecentStripeLeavers(env.STRIPE_SECRET_KEY, priceIds),
+        stripePersonal.customerIds.length > 0
+          ? getLifetimeContributionPence(env.STRIPE_SECRET_KEY, stripePersonal.customerIds)
+          : Promise.resolve(0),
       ]);
-      const rank = labStats.olderThanUser + 1;
-      const joinDate = formatOrdinalDate(membership.memberSince);
+
+      const rank = olderThanUser + 1;
+      const joinDate = formatOrdinalDate(me.memberSince);
       const contribution = formatPounds(contributionPence);
-      const tierSplitText = orderedTierBreakdown(labStats.tierBreakdown)
+      const tierSplitText = orderedTierBreakdown(tierBreakdown)
         .map(([name, count]) => `${name} ${count}`)
         .join(" · ");
       const openedDate = formatOrdinalDate(unixFromIsoDate(FARSET_LABS_OPENED_AT));
       const birthdayMsg = nextBirthdayMessage(FARSET_LABS_OPENED_AT);
+      const tierName = me.tierName ?? "Membership";
       lines = [
         `> *:bar_chart: @${slackUserName}*`,
         `> `,
-        `> • You're the ${ordinal(rank)} longest-active member, active since ${joinDate} (${humanizeDuration(membership.memberSince)})`,
-        `> • You've contributed ${contribution} to the hackerspace :green_heart:`,
+        `> • You're the ${ordinal(rank)} longest-active member, active since ${joinDate} (${humanizeDuration(me.memberSince)})`,
+        `> • You've contributed ${contribution} to the hackerspace via Stripe :green_heart:`,
         `> `,
-        `> :credit_card: You're on ${membership.tier.productName} membership. <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>.`,
+        `> :credit_card: You're on ${tierName} membership. <${env.NEXUDUS_PORTAL_URL}|Manage your account>.`,
         `> `,
         `> *:farsetlabs: Farset Labs Hackerspace*`,
         `> `,
-        `> • ${labStats.total} active members: ${tierSplitText}`,
-        `> • ${labStats.joinedLast30} joined and ${labStats.leftLast30} left in the last 30 days`,
+        `> • ${merged.size} active members: ${tierSplitText}`,
+        `> • ${joinedLast30} joined and ${leftLast30} left in the last 30 days`,
         `> • Open since ${openedDate} — next birthday is ${birthdayMsg}.`,
         `> `,
         `> ${TINKER_LINK}`,
