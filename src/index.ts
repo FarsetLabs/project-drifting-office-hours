@@ -212,7 +212,7 @@ async function handleBookingSubmission(
 
   const allRooms = loadRooms(env);
   const v = payload.view.state.values;
-  const title = (v.title_block?.title?.value ?? "").trim();
+  const eventTitle = (v.title_block?.title?.value ?? "").trim();
   const userDescription = (v.description_block?.description?.value ?? "").trim();
   const startTs = v.start_block?.start?.selected_date_time ?? null;
   const endTs = v.end_block?.end?.selected_date_time ?? null;
@@ -253,6 +253,8 @@ async function handleBookingSubmission(
   const userId = payload.user.id;
   const userName = payload.user.name;
   const roomNames = pickedRooms.map((r) => r.name).join(", ");
+  const title =
+    mode === "room-only" ? `@${userName} booked ${roomNames}` : eventTitle;
 
   try {
     const token = await getAccessToken(
@@ -282,13 +284,11 @@ async function handleBookingSubmission(
     }
 
     const commandName = mode === "room-only" ? "/book-a-room" : "/create-an-event";
-    const fullDescription = [
-      userDescription,
-      "",
-      `Booked by @${userName} using ${commandName} on Slack`,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const footer = `Booked by @${userName} using ${commandName} on Slack`;
+    const fullDescription =
+      mode === "room-only"
+        ? footer
+        : [userDescription, "", footer].filter(Boolean).join("\n");
 
     ctx.waitUntil(
       (async () => {
@@ -333,7 +333,7 @@ async function handleBookingSubmission(
             await postDM(
               env.SLACK_BOT_TOKEN,
               userId,
-              `:white_check_mark: Booked *${title}* in *${roomNames}*.\n${linkLines}${failNote}\n\n${TINKER_LINK}`,
+              `:white_check_mark: Booked *${roomNames}*.\n${linkLines}${failNote}\n\n${TINKER_LINK}`,
             );
             return;
           }
@@ -372,10 +372,11 @@ async function handleBookingSubmission(
           ]);
         } catch (err) {
           console.error("Async booking failed:", err);
+          const failureSubject = mode === "room-only" ? roomNames : title;
           await postDM(
             env.SLACK_BOT_TOKEN,
             userId,
-            `:x: Sorry — your booking for *${title}* failed to save. Please try again or ask another member to help.\n\n${TINKER_LINK}`,
+            `:x: Sorry — your booking for *${failureSubject}* failed to save. Please try again or ask another member to help.\n\n${TINKER_LINK}`,
           );
         }
       })(),
@@ -384,9 +385,10 @@ async function handleBookingSubmission(
     return jsonResponse({ response_action: "clear" });
   } catch (err) {
     console.error("Booking validation failed:", err);
+    const errorBlockId = mode === "room-only" ? "rooms_block" : "title_block";
     return jsonResponse({
       response_action: "errors",
-      errors: { title_block: "Sorry — couldn't reach the calendar. Try again in a moment." },
+      errors: { [errorBlockId]: "Sorry — couldn't reach the calendar. Try again in a moment." },
     });
   }
 }
@@ -512,7 +514,7 @@ async function checkMembership(
         "Check <https://www.farsetlabs.org.uk/book-a-room|room availability> before booking.";
       const greeting =
         mode === "room-only"
-          ? availabilityLine
+          ? `Bookings appear on the public <https://www.farsetlabs.org.uk/book-a-room|room availability> calendar — only your Slack handle and the room are shared. ${availabilityLine}`
           : `Events show up on the public <https://www.farsetlabs.org.uk/whats-on/|What's On> calendar. ${availabilityLine}`;
       return { allowed: true, message: "", greeting };
     }
