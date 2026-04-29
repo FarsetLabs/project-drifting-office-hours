@@ -389,6 +389,47 @@ async function announceToChannel(
   }
 }
 
+export interface CombinedMembership {
+  active: boolean;
+  email?: string;
+  memberSince?: number;
+}
+
+export async function findActiveMembership(
+  env: Env,
+  email: string,
+): Promise<CombinedMembership> {
+  const lower = email.toLowerCase();
+  const priceIds = env.STRIPE_MEMBERSHIP_PRICE_IDS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const [stripeResult, nexudusResult] = await Promise.all([
+    findActiveStripeMembership(env.STRIPE_SECRET_KEY, lower, priceIds).catch((err) => {
+      console.error("Stripe membership lookup failed:", err);
+      return { active: false, memberSince: undefined, customerIds: [] as string[] };
+    }),
+    findActiveNexudusMembership(
+      env.NEXUDUS_EMAIL,
+      env.NEXUDUS_PASSWORD,
+      env.NEXUDUS_BUSINESS_ID,
+      lower,
+    ).catch((err) => {
+      console.error("Nexudus membership lookup failed:", err);
+      return { active: false, memberSince: undefined };
+    }),
+  ]);
+
+  const active = stripeResult.active || nexudusResult.active;
+  if (!active) return { active: false, email: lower };
+
+  const candidates = [stripeResult.memberSince, nexudusResult.memberSince].filter(
+    (v): v is number => typeof v === "number",
+  );
+  const memberSince = candidates.length > 0 ? Math.min(...candidates) : undefined;
+  return { active: true, email: lower, memberSince };
+}
+
 async function checkMembership(
   env: Env,
   slackUserId: string,
@@ -402,12 +443,7 @@ async function checkMembership(
           ":lock: We couldn't read your Slack email. Make sure your Slack profile has an email set, or ask another member to help.",
       };
     }
-    const { active, memberSince } = await findActiveNexudusMembership(
-      env.NEXUDUS_EMAIL,
-      env.NEXUDUS_PASSWORD,
-      env.NEXUDUS_BUSINESS_ID,
-      email.toLowerCase(),
-    );
+    const { active, memberSince } = await findActiveMembership(env, email);
     if (active) {
       const duration = memberSince ? humanizeDuration(memberSince) : null;
       const greeting = [
