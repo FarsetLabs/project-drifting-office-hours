@@ -20,8 +20,11 @@ A form pops up. Fill in **Title**, optional **Description**, **Start**, **End**,
 
 If `EVENTS_CHANNEL_ID` is configured, the booking is also posted to a Slack channel (typically `#events`) with the title, time, rooms, your @-mention, and a link to the calendar event.
 
+If you don't want the booking to be public — e.g. it's a private meeting, a study session, or just blocking the room for an hour — use **`/book-a-room`** instead. Same form, but the booking is written directly to each room's resource calendar (so conflict detection still works) and is never posted to the public What's On calendar or the `#events` Slack channel.
+
 ### Other commands
 
+- **`/book-a-room`** — same form as `/create-an-event`, but the booking does **not** appear on the public What's On calendar and is **not** posted to `#events`. Each picked room gets the booking on its own resource calendar (so future bookings still detect a conflict). Use this for private meetings, study sessions, or anything you don't want broadcast. Members-only.
 - **`/stats`** — see your own membership info plus a lab-wide snapshot. Shows when you joined, your tenure and rank (*Nth* longest-active member), your tier, your lifetime contribution via Stripe, plus active member count (Stripe + Nexudus, deduplicated), tier split, joiners in the last 30 days, Stripe leavers in the last 30 days, and the lab's opening anniversary. Ephemeral reply (only you see it).
 - **`/played`** — single line: `Total time as a member: X years, Y days, Z hours, A minutes, B seconds (joined on [date] at [HH:MM:SS])`. Ephemeral reply.
 - **`/members`** — list of all active members (Stripe + Nexudus, deduplicated by email, newest joiner first). Members visible to Slack are shown as `@mentions`; the count of members not on Slack is shown at the bottom. Ephemeral reply, members-only.
@@ -173,14 +176,24 @@ Slack workspace (Farset Labs)
   │                                │     Stripe: lifetime invoices for the user (skipped if no Stripe customer)
   │                                └─ POST to response_url with rendered ephemeral
   │
+  ├─ /book-a-room ────► POST /slack/commands
+  │                          │  (same gate + modal as /create-an-event,
+  │                          │   different callback_id: submit_room_booking)
+  │                          └─ done
+  │
   └─ Modal submit ──► POST /slack/interactions
                               │
                               ├─ list events across selected rooms (events.list)
                               │   → if any conflict, surface "There's a conflict with N other bookings"
-                              ├─ create one event on the Events calendar
-                              │   with rooms attached as resource attendees
-                              ├─ DM booker with calendar link
-                              └─ (if EVENTS_CHANNEL_ID set) post announcement to #events channel
+                              ├─ if submit_booking (from /create-an-event):
+                              │     ├─ create one event on the Events calendar
+                              │     │   with rooms attached as resource attendees
+                              │     ├─ DM booker with calendar link
+                              │     └─ (if EVENTS_CHANNEL_ID set) post announcement to #events channel
+                              └─ if submit_room_booking (from /book-a-room):
+                                    ├─ create one event per picked room directly on that room's resource calendar
+                                    ├─ DM booker with one calendar link per room
+                                    └─ (no #events post — ever)
 ```
 
 ### Code map

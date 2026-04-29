@@ -163,6 +163,36 @@ export async function createEvent(
   return (await res.json()) as CreatedEvent;
 }
 
+export interface RoomBookingResult {
+  roomEmail: string;
+  link?: string;
+  error?: string;
+}
+
+export async function createRoomBookings(
+  token: string,
+  roomEmails: string[],
+  event: {
+    summary: string;
+    description: string;
+    location: string;
+    startISO: string;
+    endISO: string;
+  },
+): Promise<RoomBookingResult[]> {
+  return Promise.all(
+    roomEmails.map(async (roomEmail): Promise<RoomBookingResult> => {
+      try {
+        const created = await createEvent(token, roomEmail, event);
+        return { roomEmail, link: created.htmlLink };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { roomEmail, error: message };
+      }
+    }),
+  );
+}
+
 function base64url(bytes: Uint8Array): string {
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
