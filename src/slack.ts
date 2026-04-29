@@ -210,12 +210,6 @@ export function buildBookingModal(
     text: { type: "plain_text", text: `${r.name} (${r.capacity} seats)` },
     value: r.email,
   }));
-  const titlePlaceholder =
-    mode === "room-only" ? "e.g. Project meeting" : "e.g. Soldering night";
-  const descriptionPlaceholder =
-    mode === "room-only"
-      ? "Optional notes for yourself — won't be shared anywhere."
-      : "Here's what's on, and how to sign up to the event: https://example.com";
   const blocks: object[] = [];
   if (greeting) {
     blocks.push(
@@ -223,34 +217,38 @@ export function buildBookingModal(
       { type: "divider" },
     );
   }
-  blocks.push(
-    {
-      type: "input",
-      block_id: "title_block",
-      label: { type: "plain_text", text: "Title" },
-      element: {
-        type: "plain_text_input",
-        action_id: "title",
-        placeholder: { type: "plain_text", text: titlePlaceholder },
-        max_length: 100,
-      },
-    },
-    {
-      type: "input",
-      block_id: "description_block",
-      optional: true,
-      label: { type: "plain_text", text: "Description" },
-      element: {
-        type: "plain_text_input",
-        action_id: "description",
-        multiline: true,
-        max_length: 2000,
-        placeholder: {
-          type: "plain_text",
-          text: descriptionPlaceholder,
+  if (mode === "event") {
+    blocks.push(
+      {
+        type: "input",
+        block_id: "title_block",
+        label: { type: "plain_text", text: "Title" },
+        element: {
+          type: "plain_text_input",
+          action_id: "title",
+          placeholder: { type: "plain_text", text: "e.g. Soldering night" },
+          max_length: 100,
         },
       },
-    },
+      {
+        type: "input",
+        block_id: "description_block",
+        optional: true,
+        label: { type: "plain_text", text: "Description" },
+        element: {
+          type: "plain_text_input",
+          action_id: "description",
+          multiline: true,
+          max_length: 2000,
+          placeholder: {
+            type: "plain_text",
+            text: "Here's what's on, and how to sign up to the event: https://example.com",
+          },
+        },
+      },
+    );
+  }
+  blocks.push(
     {
       type: "input",
       block_id: "start_block",
