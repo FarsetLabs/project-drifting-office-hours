@@ -462,7 +462,7 @@ async function checkMembership(
         `:lock: *Members only* — no active Farset Labs membership found for *${email}*.\n\n` +
         `*How to fix*\n` +
         `• Not a member yet? <${env.MEMBERSHIP_SIGNUP_URL}|Join Farset Labs>.\n` +
-        `• Member under a different email? <${env.NEXUDUS_PORTAL_URL}|Update it in your Nexudus member portal>, or change your Slack profile email to match.\n\n` +
+        `• Pay under a different email? <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>, or change your Slack profile email to match.\n\n` +
         `_(In a pinch, ask a member to book on your behalf — but please try to do one of the above.)_`,
     };
   } catch (err) {
@@ -691,7 +691,7 @@ async function computeAndSendStats(
               text:
                 `:bar_chart: No active Farset Labs membership found for *${email}*.\n\n` +
                 `• Not a member yet? <${env.MEMBERSHIP_SIGNUP_URL}|Join Farset Labs>.\n` +
-                `• Member under a different email? <${env.NEXUDUS_PORTAL_URL}|Update it in your Nexudus member portal>, or change your Slack profile email to match.`,
+                `• Pay under a different email? <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>, or change your Slack profile email to match.`,
             },
           },
           {
@@ -742,7 +742,7 @@ async function computeAndSendStats(
         `> • You're the ${ordinal(rank)} longest-active member, active since ${joinDate} (${humanizeDuration(me.memberSince)})`,
         `> • You've contributed ${contribution} to the hackerspace via Stripe :green_heart:`,
         `> `,
-        `> :credit_card: You're on ${tierName} membership. <${env.NEXUDUS_PORTAL_URL}|Manage your account>.`,
+        `> :credit_card: You're on ${tierName} membership. <${env.STRIPE_BILLING_PORTAL_URL}|Manage it in Stripe>.`,
         `> `,
         `> *:farsetlabs: Farset Labs Hackerspace*`,
         `> `,
