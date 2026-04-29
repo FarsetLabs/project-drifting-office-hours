@@ -1,4 +1,9 @@
-import { createEvent, getAccessToken, getEventsForRooms } from "./google";
+import {
+  createEvent,
+  createRoomBookings,
+  getAccessToken,
+  getEventsForRooms,
+} from "./google";
 import {
   buildBookingModal,
   buildErrorModal,
@@ -12,6 +17,7 @@ import {
   tinkerContextBlock,
   TINKER_LINK,
   verifySlackSignature,
+  type BookingMode,
 } from "./slack";
 import {
   findActiveMembership as findActiveStripeMembership,
@@ -130,7 +136,8 @@ async function handleSlashCommand(
     return new Response("Missing trigger_id or user_id", { status: 400 });
   }
 
-  const gate = await checkMembership(env, userId);
+  const mode: BookingMode = command === "/book-a-room" ? "room-only" : "event";
+  const gate = await checkMembership(env, userId, mode);
   if (!gate.allowed) {
     return jsonResponse({
       response_type: "ephemeral",
@@ -143,7 +150,7 @@ async function handleSlashCommand(
     openModal(
       env.SLACK_BOT_TOKEN,
       triggerId,
-      buildBookingModal(rooms, gate.greeting, gate.funFact),
+      buildBookingModal(rooms, gate.greeting, gate.funFact, mode),
     ).catch((err) => console.error("Failed to open modal:", err)),
   );
 
@@ -197,9 +204,11 @@ async function handleBookingSubmission(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  if (payload.view.callback_id !== "submit_booking") {
+  const callbackId = payload.view.callback_id;
+  if (callbackId !== "submit_booking" && callbackId !== "submit_room_booking") {
     return new Response("", { status: 200 });
   }
+  const mode: BookingMode = callbackId === "submit_room_booking" ? "room-only" : "event";
 
   const allRooms = loadRooms(env);
   const v = payload.view.state.values;
@@ -207,7 +216,12 @@ async function handleBookingSubmission(
   const userDescription = (v.description_block?.description?.value ?? "").trim();
   const startTs = v.start_block?.start?.selected_date_time ?? null;
   const endTs = v.end_block?.end?.selected_date_time ?? null;
-  const pickedOptions = v.rooms_block?.rooms?.selected_options ?? [];
+  const pickedOptions =
+    mode === "room-only"
+      ? v.rooms_block?.rooms?.selected_option
+        ? [v.rooms_block.rooms.selected_option]
+        : []
+      : v.rooms_block?.rooms?.selected_options ?? [];
   const pickedRooms = pickedOptions
     .map((opt) => allRooms.find((r) => r.email === opt.value))
     .filter((r): r is Room => Boolean(r));
@@ -215,7 +229,9 @@ async function handleBookingSubmission(
   if (pickedRooms.length === 0) {
     return jsonResponse({
       response_action: "errors",
-      errors: { rooms_block: "Pick at least one room." },
+      errors: {
+        rooms_block: mode === "room-only" ? "Pick a room." : "Pick at least one room.",
+      },
     });
   }
   if (startTs == null || endTs == null) {
@@ -265,10 +281,11 @@ async function handleBookingSubmission(
       });
     }
 
+    const commandName = mode === "room-only" ? "/book-a-room" : "/create-an-event";
     const fullDescription = [
       userDescription,
       "",
-      `Booked by @${userName} using /create-an-event on Slack`,
+      `Booked by @${userName} using ${commandName} on Slack`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -276,6 +293,51 @@ async function handleBookingSubmission(
     ctx.waitUntil(
       (async () => {
         try {
+          if (mode === "room-only") {
+            const results = await createRoomBookings(
+              token,
+              pickedRooms.map((r) => r.email),
+              {
+                summary: title,
+                description: fullDescription,
+                location: `Farset Labs — ${roomNames}`,
+                startISO,
+                endISO,
+              },
+            );
+            const failed = results.filter((r) => !r.link);
+            const succeeded = results.filter((r) => r.link);
+            if (succeeded.length === 0) {
+              await postDM(
+                env.SLACK_BOT_TOKEN,
+                userId,
+                `:x: Sorry — your room booking for *${title}* failed to save. Please try again or ask another member to help.\n\n${TINKER_LINK}`,
+              );
+              return;
+            }
+            const linkLines = succeeded
+              .map((r) => {
+                const room = pickedRooms.find((p) => p.email === r.roomEmail);
+                return `• ${room?.name ?? r.roomEmail}: ${r.link}`;
+              })
+              .join("\n");
+            const failNote = failed.length
+              ? `\n:warning: Failed to book: ${failed
+                  .map(
+                    (r) =>
+                      pickedRooms.find((p) => p.email === r.roomEmail)?.name ??
+                      r.roomEmail,
+                  )
+                  .join(", ")}. Check those rooms or try again.`
+              : "";
+            await postDM(
+              env.SLACK_BOT_TOKEN,
+              userId,
+              `:white_check_mark: Booked *${title}* in *${roomNames}*.\n${linkLines}${failNote}\n\n${TINKER_LINK}`,
+            );
+            return;
+          }
+
           const event = await createEvent(token, env.GOOGLE_CALENDAR_ID, {
             summary: title,
             description: fullDescription,
@@ -433,6 +495,7 @@ export async function findActiveMembership(
 async function checkMembership(
   env: Env,
   slackUserId: string,
+  mode: BookingMode = "event",
 ): Promise<{ allowed: boolean; message: string; greeting?: string; funFact?: string }> {
   try {
     const email = await getUserEmail(env.SLACK_BOT_TOKEN, slackUserId);
@@ -443,17 +506,15 @@ async function checkMembership(
           ":lock: We couldn't read your Slack email. Make sure your Slack profile has an email set, or ask another member to help.",
       };
     }
-    const { active, memberSince } = await findActiveMembership(env, email);
+    const { active } = await findActiveMembership(env, email);
     if (active) {
-      const duration = memberSince ? humanizeDuration(memberSince) : null;
-      const greeting = [
-        "*Let's create an event!*",
-        "Bookings show up on the public <https://www.farsetlabs.org.uk/whats-on/|What's On> calendar — use this to book rooms or run events.",
-      ].join("\n\n");
-      const funFact = duration
-        ? `:partying_face: You've been a Farset Labs member for *${duration}*.`
-        : undefined;
-      return { allowed: true, message: "", greeting, funFact };
+      const availabilityLine =
+        "Check <https://www.farsetlabs.org.uk/book-a-room|room availability> before booking.";
+      const greeting =
+        mode === "room-only"
+          ? availabilityLine
+          : `Events show up on the public <https://www.farsetlabs.org.uk/whats-on/|What's On> calendar. ${availabilityLine}`;
+      return { allowed: true, message: "", greeting };
     }
 
     return {

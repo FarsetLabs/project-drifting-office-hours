@@ -47,5 +47,6 @@ export interface SlackBlockValue {
   type: string;
   value?: string | null;
   selected_options?: Array<{ value: string }>;
+  selected_option?: { value: string } | null;
   selected_date_time?: number | null;
 }

@@ -198,15 +198,24 @@ export function buildErrorModal(message: string): object {
   };
 }
 
+export type BookingMode = "event" | "room-only";
+
 export function buildBookingModal(
   rooms: Room[],
   greeting?: string,
   funFact?: string,
+  mode: BookingMode = "event",
 ): object {
   const roomOptions = rooms.map((r) => ({
     text: { type: "plain_text", text: `${r.name} (${r.capacity} seats)` },
     value: r.email,
   }));
+  const titlePlaceholder =
+    mode === "room-only" ? "e.g. Project meeting" : "e.g. Soldering night";
+  const descriptionPlaceholder =
+    mode === "room-only"
+      ? "Optional notes for yourself — won't be shared anywhere."
+      : "Here's what's on, and how to sign up to the event: https://example.com";
   const blocks: object[] = [];
   if (greeting) {
     blocks.push(
@@ -222,7 +231,7 @@ export function buildBookingModal(
       element: {
         type: "plain_text_input",
         action_id: "title",
-        placeholder: { type: "plain_text", text: "e.g. Soldering night" },
+        placeholder: { type: "plain_text", text: titlePlaceholder },
         max_length: 100,
       },
     },
@@ -238,7 +247,7 @@ export function buildBookingModal(
         max_length: 2000,
         placeholder: {
           type: "plain_text",
-          text: "Here's what's on, and how to sign up to the event: https://example.com",
+          text: descriptionPlaceholder,
         },
       },
     },
@@ -254,24 +263,39 @@ export function buildBookingModal(
       label: { type: "plain_text", text: "End" },
       element: { type: "datetimepicker", action_id: "end" },
     },
-    {
-      type: "input",
-      block_id: "rooms_block",
-      label: { type: "plain_text", text: "Rooms" },
-      element: {
-        type: "multi_static_select",
-        action_id: "rooms",
-        placeholder: { type: "plain_text", text: "Pick one or more rooms" },
-        options: roomOptions,
-      },
-    },
+    mode === "room-only"
+      ? {
+          type: "input",
+          block_id: "rooms_block",
+          label: { type: "plain_text", text: "Room" },
+          element: {
+            type: "static_select",
+            action_id: "rooms",
+            placeholder: { type: "plain_text", text: "Pick a room" },
+            options: roomOptions,
+          },
+        }
+      : {
+          type: "input",
+          block_id: "rooms_block",
+          label: { type: "plain_text", text: "Rooms" },
+          element: {
+            type: "multi_static_select",
+            action_id: "rooms",
+            placeholder: { type: "plain_text", text: "Pick one or more rooms" },
+            options: roomOptions,
+          },
+        },
     { type: "divider" },
     tinkerContextBlock(funFact),
   );
   return {
     type: "modal",
-    callback_id: "submit_booking",
-    title: { type: "plain_text", text: "Create an Event" },
+    callback_id: mode === "room-only" ? "submit_room_booking" : "submit_booking",
+    title: {
+      type: "plain_text",
+      text: mode === "room-only" ? "Book a Room" : "Create an Event",
+    },
     submit: { type: "plain_text", text: "Book" },
     close: { type: "plain_text", text: "Cancel" },
     blocks,
