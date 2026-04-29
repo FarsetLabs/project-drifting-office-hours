@@ -248,19 +248,22 @@ export function buildBookingModal(
       },
     );
   }
-  blocks.push(
-    {
-      type: "input",
-      block_id: "start_block",
-      label: { type: "plain_text", text: "Start" },
-      element: { type: "datetimepicker", action_id: "start" },
-    },
-    {
-      type: "input",
-      block_id: "end_block",
-      label: { type: "plain_text", text: "End" },
-      element: { type: "datetimepicker", action_id: "end" },
-    },
+  const startElement: Record<string, unknown> = {
+    type: "datetimepicker",
+    action_id: "start",
+  };
+  const endElement: Record<string, unknown> = {
+    type: "datetimepicker",
+    action_id: "end",
+  };
+  if (mode === "room-only") {
+    const nowMs = Date.now();
+    const hourMs = 60 * 60 * 1000;
+    const startTs = Math.ceil(nowMs / hourMs) * (hourMs / 1000);
+    startElement.initial_date_time = startTs;
+    endElement.initial_date_time = startTs + 3600;
+  }
+  const roomsBlock =
     mode === "room-only"
       ? {
           type: "input",
@@ -283,10 +286,21 @@ export function buildBookingModal(
             placeholder: { type: "plain_text", text: "Pick one or more rooms" },
             options: roomOptions,
           },
-        },
-    { type: "divider" },
-    tinkerContextBlock(funFact),
-  );
+        };
+  const startBlock = {
+    type: "input",
+    block_id: "start_block",
+    label: { type: "plain_text", text: "Start" },
+    element: startElement,
+  };
+  const endBlock = {
+    type: "input",
+    block_id: "end_block",
+    label: { type: "plain_text", text: "End" },
+    element: endElement,
+  };
+  blocks.push(roomsBlock, startBlock, endBlock);
+  blocks.push({ type: "divider" }, tinkerContextBlock(funFact));
   return {
     type: "modal",
     callback_id: mode === "room-only" ? "submit_room_booking" : "submit_booking",
